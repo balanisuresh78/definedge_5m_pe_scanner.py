@@ -22,8 +22,9 @@ jobs:
         with:
           python-version: '3.11'
 
+      # FIXED: Changed 'integrate' to 'pyintegrate'
       - name: Install Dependencies
-        run: pip install integrate pyotp pandas numpy tabulate pytz
+        run: pip install pyintegrate pyotp pandas numpy tabulate pytz
 
       - name: Run 5m Definedge PE Scanner
         env:
