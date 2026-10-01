@@ -30,11 +30,8 @@ jobs:
       - name: Install Dependencies
         run: pip install pyintegrate pyotp pandas numpy tabulate pytz
 
-      - name: Run 77m Definedge PE Scanner
+    - name: Run 77m Definedge PE Scanner
         env:
-          DEFINEDGE_API_TOKEN: ${{ secrets.DEFINEDGE_API_TOKEN }}
-          DEFINEDGE_API_SECRET: ${{ secrets.DEFINEDGE_API_SECRET }}
-          DEFINEDGE_TOTP_SECRET: ${{ secrets.DEFINEDGE_TOTP_SECRET }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
         run: |
           if [ -f "definedge_77m_pe_scanner.py" ]; then
