@@ -15,29 +15,55 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-# Definedge API Credentials
-API_TOKEN = os.environ.get("DEFINEDGE_API_TOKEN", "7eb93aac-c746-44bd-9755-18ae6289fdfc")
-API_SECRET = os.environ.get("DEFINEDGE_API_SECRET", "snToBptj6e2X/c9c7POM8Q==")
-TOTP_SECRET = os.environ.get("DEFINEDGE_TOTP_SECRET", "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR")
+API_TOKEN = os.environ.get("7eb93aac-c746-44bd-9755-18ae6289fdfc", "")
+API_SECRET = os.environ.get("snToBptj6e2X/c9c7POM8Q==", "")
+TOTP_SECRET = os.environ.get("IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR", "")
 
-# Email Configuration
 SENDER_EMAIL = "balanisuresh@gmail.com"
 RECEIVER_EMAIL = "balanisuresh@gmail.com"
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 
 # Strategy Parameters
-TF_MINUTES = 5                # Target Timeframe: 5-minute candles
+TF_MINUTES = 77               # Target Timeframe: 77-minute candles
 STOCH_K = 5                   # Stochastic %K period
 STOCH_D = 3                   # Stochastic %D smoothing period
 STOCH_THRESHOLD = 31.0        # Crosses below 31
 STRICT_CROSSOVER = True       # True: prev >= 31 and curr < 31
 LL_PERIOD = 34                # 34-bar Lowest Low lookback
 
-HIST_LOOKBACK_DAYS = 3        # 3 days of 1m data ensures plenty of 5m bars
+HIST_LOOKBACK_DAYS = 15       # 15 calendar days ensures enough data for 34 bars of 77m
 STRIKE_BAND_PCT = 0.15        # Scan PE strikes within +/- 15% of spot
 
 fno_stocks = [
-    'HDFCBANK', 'RELIANCE', 'SBIN', 'INFY', 'TCS'
+    '360ONE', 'ABB', 'ABCAPITAL', 'ADANIENSOL', 'ADANIENT', 'ADANIGREEN', 'ADANIPORTS', 
+    'ADANIPOWER', 'ALKEM', 'AMBER', 'AMBUJACEM', 'ANGELONE', 'APLAPOLLO', 'APOLLOHOSP', 
+    'ASHOKLEY', 'ASIANPAINT', 'ASTRAL', 'ATHERENERG', 'AUBANK', 'AUROPHARMA', 'AXISBANK', 
+    'BAJAJ-AUTO', 'BAJAJFINSV', 'BAJAJHLDNG', 'BAJFINANCE', 'BANDHANBNK', 'BANKBARODA', 
+    'BANKINDIA', 'BDL', 'BEL', 'BHARATFORG', 'BHARTIARTL', 'BHEL', 'BIOCON', 
+    'BLUESTARCO', 'BOSCHLTD', 'BPCL', 'BRITANNIA', 'BSE', 'CAMS', 'CANBK', 'CDSL', 
+    'CGPOWER', 'CHOLAFIN', 'CIPLA', 'COALINDIA', 'COCHINSHIP', 'COFORGE', 'COLPAL', 
+    'CONCOR', 'CROMPTON', 'CUMMINSIND', 'DABUR', 'DELHIVERY', 'DIVISLAB', 'DIXON', 
+    'DLF', 'DMART', 'DRREDDY', 'EICHERMOT', 'ETERNAL', 'FEDERALBNK', 'FORCEMOT', 'FORTIS', 
+    'GAIL', 'GLENMARK', 'GMRAIRPORT', 'GODFRYPHLP', 'GODREJCP', 'GODREJPROP', 'GRASIM', 
+    'GVT&D', 'HAL', 'HAVELLS', 'HCLTECH', 'HDFCAMC', 'HDFCBANK', 'HDFCLIFE', 'HEROMOTOCO', 
+    'HINDALCO', 'HINDPETRO', 'HINDUNILVR', 'HINDZINC', 'HYUNDAI', 'ICICIBANK', 'ICICIGI', 
+    'ICICIPRULI', 'IDEA', 'IDFCFIRSTB', 'IEX', 'INDHOTEL', 'INDIANB', 'INDIGO', 
+    'INDUSINDBK', 'INDUSTOWER', 'INFY', 'INOXWIND', 'IOC', 'IREDA', 'IRFC', 'ITC', 
+    'JINDALSTEL', 'JIOFIN', 'JSWENERGY', 'JSWSTEEL', 'JUBLFOOD', 'KALYANKJIL', 'KAYNES', 
+    'KEI', 'KFINTECH', 'KOTAKBANK', 'KPITTECH', 'LAURUSLABS', 'LICHSGFIN', 'LICI', 
+    'LODHA', 'LT', 'LTF', 'LTM', 'LUPIN', 'M&M', 'MAHABANK', 'MANAPPURAM', 'MANKIND', 
+    'MARICO', 'MARUTI', 'MAXHEALTH', 'MAZDOCK', 'MCX', 'MFSL', 'MOTHERSON', 'MOTILALOFS', 
+    'MPHASIS', 'MUTHOOTFIN', 'NAM-INDIA', 'NATIONALUM', 'NAUKRI', 'NBCC', 'NESTLEIND', 
+    'NHPC', 'NMDC', 'NTPC', 'NYKAA', 'OBEROIRLTY', 'OFSS', 'OIL', 'ONGC', 
+    'PAGEIND', 'PATANJALI', 'PAYTM', 'PERSISTENT', 'PETRONET', 'PFC', 'PGEL', 'PHOENIXLTD', 
+    'PIDILITIND', 'PIIND', 'PNB', 'PNBHOUSING', 'POLICYBZR', 'POLYCAB', 'POWERGRID', 
+    'POWERINDIA', 'PREMIERENE', 'PRESTIGE', 'RADICO', 'RBLBANK', 'RECLTD', 'RELIANCE', 
+    'RVNL', 'SAGILITY', 'SAIL', 'SBICARD', 'SBILIFE', 'SBIN', 'SHREECEM', 'SHRIRAMFIN', 
+    'SIEMENS', 'SOLARINDS', 'SONACOMS', 'SRF', 'SUNPHARMA', 'SUPREMEIND', 'SUZLON', 
+    'SWIGGY', 'TATACONSUM', 'TATAELXSI', 'TATAPOWER', 'TATASTEEL', 'TCS', 'TECHM', 
+    'TIINDIA', 'TITAN', 'TMPV', 'TORNTPHARM', 'TRENT', 'TVSMOTOR', 'ULTRACEMCO', 
+    'UNIONBANK', 'UNITDSPR', 'UNOMINDA', 'UPL', 'VBL', 'VEDL', 'VMM', 'VOLTAS', 
+    'WAAREEENER', 'WIPRO', 'YESBANK', 'ZYDUSLIFE'
 ]
 
 # ==========================================
@@ -86,7 +112,7 @@ def get_second_highest_oi_put(ic, conn, stock_symbol, pe_contracts, spot_ltp=Non
 
     if len(oi_list) < 2: return None
     oi_list.sort(key=lambda x: x["oi"], reverse=True)
-    return oi_list[1]  # Return 2nd highest
+    return oi_list[1] 
 
 def parse_historical_to_df(hist_generator):
     rows = []
@@ -120,7 +146,6 @@ def parse_historical_to_df(hist_generator):
     return df.reset_index(drop=True)
 
 def resample_1m_to_custom_tf(df_1m, now_ist, tf_minutes):
-    """Resamples 1m data into dynamic X-minute candles and drops forming bar."""
     if df_1m.empty: return pd.DataFrame()
 
     df = df_1m.copy()
@@ -151,7 +176,7 @@ def resample_1m_to_custom_tf(df_1m, now_ist, tf_minutes):
 
     now_naive_ist = now_ist.replace(tzinfo=None)
     if now_naive_ist < bin_close_dt:
-        df_tf = df_tf.iloc[:-1] # Drop incomplete candle
+        df_tf = df_tf.iloc[:-1] 
 
     df_tf.drop(columns=["Date_Only", "Bin"], inplace=True)
     df_tf.set_index("Datetime", inplace=True)
@@ -167,13 +192,13 @@ def calculate_stoch_d(df, k_period=5, d_period=3):
 def send_email_alert(results_df, timestamp):
     if not APP_PASSWORD: return
     msg = EmailMessage()
-    msg["Subject"] = f"⚡ 5m Stock PE Alert: %D < 31 on Minus 2 Bar ({timestamp})"
+    msg["Subject"] = f"🎯 77m Stock PE Alert: %D < 31 on Minus 2 Bar ({timestamp})"
     msg["From"] = SENDER_EMAIL
     msg["To"] = RECEIVER_EMAIL
 
     html_table = results_df.to_html(index=False, justify="center")
     body = (
-        f"<h3>5-Minute Stock PUT (2nd Highest OI) Scan at {timestamp}</h3>"
+        f"<h3>77-Minute Stock PUT (2nd Highest OI) Scan at {timestamp}</h3>"
         f"<ul>"
         f"<li>%D (5,3) crossed below 31 on the <b>Minus 2 Bar</b>.</li>"
         f"<li>Price is currently ABOVE the lowest low of the last 34 completed candles.</li>"
@@ -195,13 +220,12 @@ def send_email_alert(results_df, timestamp):
 # ==========================================
 # 3. MAIN SCANNER ENGINE
 # ==========================================
-def run_definedge_5m_scan():
+def run_definedge_77m_scan():
     ist_tz = pytz.timezone("Asia/Kolkata")
     now_ist = datetime.now(ist_tz)
     now_ist_str = now_ist.strftime("%d-%b %H:%M:%S")
-    print(f"[{now_ist_str}] Logging into Definedge Integrate API for 5m Scan...")
+    print(f"[{now_ist_str}] Logging into Definedge Integrate API for 77m Scan...")
 
-    # 1. Authenticate
     conn = ConnectToIntegrate()
     try:
         current_totp = pyotp.TOTP(TOTP_SECRET.replace(" ", "")).now()
@@ -212,7 +236,6 @@ def run_definedge_5m_scan():
         print(f"❌ Definedge Login Failed: {auth_err}")
         return
 
-    # 2. Pre-index NFO Stock PUTs
     today_date = now_ist.date()
     stock_set = set(fno_stocks)
     pe_by_stock = {}
@@ -234,8 +257,8 @@ def run_definedge_5m_scan():
     end_time = now_ist.replace(tzinfo=None)
     start_time = end_time - timedelta(days=HIST_LOOKBACK_DAYS)
 
-    # 3. Iterate F&O Stocks
-    for stock in fno_stocks:
+    for idx, stock in enumerate(fno_stocks, 1):
+        print(f"Scanning {stock} ({idx}/{len(fno_stocks)})...", flush=True)
         if stock not in pe_by_stock: continue
 
         all_entries = pe_by_stock[stock]
@@ -256,7 +279,6 @@ def run_definedge_5m_scan():
         option_tsym = target_put["trading_symbol"]
 
         try:
-            # 4. Fetch 1m History
             hist_gen = ic.historical_data(
                 exchange=conn.EXCHANGE_TYPE_NFO,
                 trading_symbol=option_tsym,
@@ -267,35 +289,27 @@ def run_definedge_5m_scan():
             df_1m = parse_historical_to_df(hist_gen)
             if df_1m.empty: continue
 
-            # 5. Build completed 5m candles
-            df_5m = resample_1m_to_custom_tf(df_1m, now_ist, TF_MINUTES)
+            df_77m = resample_1m_to_custom_tf(df_1m, now_ist, TF_MINUTES)
             
-            # Need enough bars for 34-bar LL and Stochastics
             min_bars_needed = max(STOCH_K + STOCH_D, LL_PERIOD) + 2
-            if len(df_5m) < min_bars_needed: continue
+            if len(df_77m) < min_bars_needed: continue
 
-            # 6. Apply Indicators & Conditions
-            df_5m["Stoch_D"] = calculate_stoch_d(df_5m, STOCH_K, STOCH_D)
+            df_77m["Stoch_D"] = calculate_stoch_d(df_77m, STOCH_K, STOCH_D)
 
-            curr_close = float(df_5m["Close"].iloc[-1])
-            
-            # The latest completed bar is iloc[-1].
-            # The "Minus 2 Bar" is iloc[-2], and its previous bar is iloc[-3].
-            minus_1_d = float(df_5m["Stoch_D"].iloc[-1])
-            minus_2_d = float(df_5m["Stoch_D"].iloc[-2])
-            minus_3_d = float(df_5m["Stoch_D"].iloc[-3])
+            curr_close = float(df_77m["Close"].iloc[-1])
+            minus_1_d = float(df_77m["Stoch_D"].iloc[-1])
+            minus_2_d = float(df_77m["Stoch_D"].iloc[-2])
+            minus_3_d = float(df_77m["Stoch_D"].iloc[-3])
             
             if pd.isna(minus_2_d) or pd.isna(minus_3_d): continue
 
-            # CONDITION 1: Stoch %D crosses below 31 on the Minus 2 Bar
             stoch_crossed_on_minus_2 = (minus_3_d >= STOCH_THRESHOLD and minus_2_d < STOCH_THRESHOLD) if STRICT_CROSSOVER else (minus_2_d < STOCH_THRESHOLD)
             
-            # CONDITION 2: Price > Lowest Low of last 34 completed bars
-            lowest_low_34 = float(df_5m["Low"].iloc[-LL_PERIOD:].min())
+            lowest_low_34 = float(df_77m["Low"].iloc[-LL_PERIOD:].min())
             price_held_above = curr_close > lowest_low_34
 
             if stoch_crossed_on_minus_2 and price_held_above:
-                minus_2_time_str = df_5m.index[-2].strftime("%d-%b %H:%M")
+                minus_2_time_str = df_77m.index[-2].strftime("%d-%b %H:%M")
                 print(f"  ✅ MATCH: {option_tsym} | %D Crossed at {minus_2_time_str} | Close {curr_close} > LL {lowest_low_34}")
                 results.append({
                     "Stock": stock,
@@ -311,7 +325,6 @@ def run_definedge_5m_scan():
         except Exception:
             continue
 
-    # Output & Email Results
     if results:
         res_df = pd.DataFrame(results).sort_values(by="Minus 2 %D", ascending=True).reset_index(drop=True)
         print("\n🎯 Matches found! Sending email notification...")
@@ -321,4 +334,4 @@ def run_definedge_5m_scan():
         print("\nNo setups matched both %D < 31 on Minus 2 Bar and the 34-Bar price hold.")
 
 if __name__ == "__main__":
-    run_definedge_5m_scan()
+    run_definedge_77m_scan()
