@@ -15,9 +15,9 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-API_TOKEN = os.environ.get("7eb93aac-c746-44bd-9755-18ae6289fdfc", "")
-API_SECRET = os.environ.get("snToBptj6e2X/c9c7POM8Q==", "")
-TOTP_SECRET = os.environ.get("IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR", "")
+API_TOKEN = "7eb93aac-c746-44bd-9755-18ae6289fdfc"
+API_SECRET = "snToBptj6e2X/c9c7POM8Q=="
+TOTP_SECRET = "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR"
 
 SENDER_EMAIL = "balanisuresh@gmail.com"
 RECEIVER_EMAIL = "balanisuresh@gmail.com"
