@@ -1,0 +1,39 @@
+name: Definedge 30m FUT Scanner
+
+on:
+  schedule:
+    # Runs at minute 16 and 46 past the hour, from 09:46 IST to 15:16 IST
+    # UTC Equivalent: 04:16 to 09:46
+    - cron: '16,46 4-9 * * 1-5'
+    
+    # Runs at 15:31 IST for the final closing 15:15-15:30 bar
+    # UTC Equivalent: 10:01
+    - cron: '1 10 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  run-30m-fut-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@main
+
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@main
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install pyintegrate pyotp pandas numpy tabulate pytz
+
+      - name: Run 30m Definedge Futures Scanner
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: |
+          if [ -f "definedge_30m_fut_scanner.py" ]; then
+            python definedge_30m_fut_scanner.py
+          else
+            SCRIPT=$(ls *.py | head -n 1)
+            echo "Executing Python file: $SCRIPT"
+            python "$SCRIPT"
+          fi
