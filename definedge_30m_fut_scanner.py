@@ -21,14 +21,13 @@ TOTP_SECRET = "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR"
 
 SENDER_EMAIL = "balanisuresh@gmail.com"
 RECEIVER_EMAIL = "balanisuresh@gmail.com"
-# Keep APP_PASSWORD fetching from GitHub Secrets so your email password stays hidden
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 
 # Strategy Parameters
-TF_MINUTES = 30               # Target Timeframe: 30-minute candles
+TF_MINUTES = 30               
 STOCH_K = 5                   
 STOCH_D = 3                   
-HIST_LOOKBACK_DAYS = 25       # 25 days ensures we capture full Stoch overbought/oversold cycles
+HIST_LOOKBACK_DAYS = 25       
 
 fno_stocks = [
     '360ONE', 'ABB', 'ABCAPITAL', 'ADANIENSOL', 'ADANIENT', 'ADANIGREEN', 'ADANIPORTS', 
@@ -134,7 +133,7 @@ def resample_1m_to_custom_tf(df_1m, now_ist, tf_minutes):
 
     now_naive_ist = now_ist.replace(tzinfo=None)
     if now_naive_ist < bin_close_dt:
-        df_tf = df_tf.iloc[:-1] # Drop incomplete forming candle
+        df_tf = df_tf.iloc[:-1]
 
     df_tf.drop(columns=["Date_Only", "Bin"], inplace=True)
     return df_tf.reset_index(drop=True)
@@ -157,33 +156,25 @@ def calculate_atr(df, period=2):
 # 3. STRATEGY LOGIC EVALUATORS
 # ==========================================
 def evaluate_bullish_setup(df, current_idx):
-    # 1. Find last Overbought (Stoch_D > 69)
-    last_ob_idx = None
-    for i in range(current_idx - 1, -1, -1):
-        if df.loc[i, 'Stoch_D'] > 69:
-            last_ob_idx = i
-            break
-    if last_ob_idx is None: return False
-    
-    # 2. Peak = Highest Close between last Overbought and Current
-    peak_idx = df.loc[last_ob_idx:current_idx, 'Close'].idxmax()
-    
-    # 3. Find last Oversold (Stoch_D < 31) BEFORE the Peak
-    last_os_idx = None
-    for i in range(peak_idx - 1, -1, -1):
-        if df.loc[i, 'Stoch_D'] < 31:
-            last_os_idx = i
-            break
-    if last_os_idx is None: return False
-    
-    # 4. Trough = Lowest Close between last Oversold and Peak
-    trough_idx = df.loc[last_os_idx:peak_idx, 'Close'].idxmin()
-    
-    # 5. Define Phases
+    # 1. Find the recent Closing Peak (Top of the UP impulse)
+    # Scan up to 40 bars backwards to find the highest close
+    search_window = df.loc[max(0, current_idx - 40):current_idx]
+    peak_idx = search_window['Close'].idxmax()
+    if peak_idx >= current_idx or peak_idx == max(0, current_idx - 40): 
+        return False
+        
+    # 2. Find the Trough (Bottom of the UP impulse)
+    # Scan backwards from the Peak to find the lowest close
+    trough_window = df.loc[max(0, peak_idx - 40):peak_idx]
+    trough_idx = trough_window['Close'].idxmin()
+    if trough_idx >= peak_idx or trough_idx == max(0, peak_idx - 40): 
+        return False
+        
+    # 3. Define Phases
     impulse_df = df.loc[trough_idx:peak_idx]
     correction_df = df.loc[peak_idx:current_idx]
     
-    # 6. Impulse Checks (Up Bars)
+    # 4. Impulse Checks (Targeting UP Bars)
     up_bars = impulse_df[impulse_df['Close'] > impulse_df['Open']]
     if len(up_bars) > 10 or len(up_bars) == 0: 
         return False
@@ -191,53 +182,48 @@ def evaluate_bullish_setup(df, current_idx):
     signal_found = False
     for idx in up_bars.index:
         if idx > 0 and pd.notna(df.loc[idx, 'ATR2']) and pd.notna(df.loc[idx-1, 'ATR2']):
-            if df.loc[idx, 'ATR2'] > 1.33 * df.loc[idx-1, 'ATR2']:
+            if df.loc[idx, 'ATR2'] >= 1.33 * df.loc[idx-1, 'ATR2']:
                 signal_found = True
                 break
-    if not signal_found: return False
+    if not signal_found: 
+        return False
     
-    # 7. Reference ATR
+    # 5. Reference ATR
     atr_values = up_bars['ATR2'].sort_values(ascending=False)
     top_n = max(1, len(atr_values) // 2)
     ref_atr = atr_values.head(top_n).mean()
     
-    # 8. Correction Checks (Down Bars)
+    # 6. Correction Checks (Targeting DOWN Bars)
     down_bars = correction_df[correction_df['Close'] < correction_df['Open']]
-    if len(down_bars) == 0: return False # Need at least one pullback bar
+    if len(down_bars) == 0: 
+        return False 
     
     bodies = (down_bars['Open'] - down_bars['Close']).abs()
     if all(bodies < (0.75 * ref_atr)):
         return {"Signal": "Bullish 🟢", "Ref ATR": round(ref_atr, 2), "Max Body": round(bodies.max(), 2)}
     return False
 
+
 def evaluate_bearish_setup(df, current_idx):
-    # 1. Find last Oversold (Stoch_D < 31)
-    last_os_idx = None
-    for i in range(current_idx - 1, -1, -1):
-        if df.loc[i, 'Stoch_D'] < 31:
-            last_os_idx = i
-            break
-    if last_os_idx is None: return False
-    
-    # 2. Trough = Lowest Close between last Oversold and Current
-    trough_idx = df.loc[last_os_idx:current_idx, 'Close'].idxmin()
-    
-    # 3. Find last Overbought (Stoch_D > 69) BEFORE the Trough
-    last_ob_idx = None
-    for i in range(trough_idx - 1, -1, -1):
-        if df.loc[i, 'Stoch_D'] > 69:
-            last_ob_idx = i
-            break
-    if last_ob_idx is None: return False
-    
-    # 4. Peak = Highest Close between last Overbought and Trough
-    peak_idx = df.loc[last_ob_idx:trough_idx, 'Close'].idxmax()
-    
-    # 5. Define Phases
+    # 1. Find the recent Closing Trough (Bottom of the DOWN impulse)
+    # Scan up to 40 bars backwards to find the lowest close
+    search_window = df.loc[max(0, current_idx - 40):current_idx]
+    trough_idx = search_window['Close'].idxmin()
+    if trough_idx >= current_idx or trough_idx == max(0, current_idx - 40): 
+        return False
+        
+    # 2. Find the Peak (Top of the DOWN impulse)
+    # Scan backwards from the Trough to find the highest close
+    peak_window = df.loc[max(0, trough_idx - 40):trough_idx]
+    peak_idx = peak_window['Close'].idxmax()
+    if peak_idx >= trough_idx or peak_idx == max(0, trough_idx - 40): 
+        return False
+        
+    # 3. Define Phases
     impulse_df = df.loc[peak_idx:trough_idx]
     correction_df = df.loc[trough_idx:current_idx]
     
-    # 6. Impulse Checks (Down Bars)
+    # 4. Impulse Checks (Targeting DOWN Bars)
     down_bars = impulse_df[impulse_df['Close'] < impulse_df['Open']]
     if len(down_bars) > 10 or len(down_bars) == 0: 
         return False
@@ -245,19 +231,21 @@ def evaluate_bearish_setup(df, current_idx):
     signal_found = False
     for idx in down_bars.index:
         if idx > 0 and pd.notna(df.loc[idx, 'ATR2']) and pd.notna(df.loc[idx-1, 'ATR2']):
-            if df.loc[idx, 'ATR2'] > 1.33 * df.loc[idx-1, 'ATR2']:
+            if df.loc[idx, 'ATR2'] >= 1.33 * df.loc[idx-1, 'ATR2']:
                 signal_found = True
                 break
-    if not signal_found: return False
+    if not signal_found: 
+        return False
     
-    # 7. Reference ATR
+    # 5. Reference ATR
     atr_values = down_bars['ATR2'].sort_values(ascending=False)
     top_n = max(1, len(atr_values) // 2)
     ref_atr = atr_values.head(top_n).mean()
     
-    # 8. Correction Checks (Up Bars)
+    # 6. Correction Checks (Targeting UP Bars)
     up_bars = correction_df[correction_df['Close'] > correction_df['Open']]
-    if len(up_bars) == 0: return False 
+    if len(up_bars) == 0: 
+        return False 
     
     bodies = (up_bars['Close'] - up_bars['Open']).abs()
     if all(bodies < (0.75 * ref_atr)):
@@ -315,7 +303,6 @@ def run_definedge_30m_scan():
     stock_set = set(fno_stocks)
     fut_by_stock = {}
 
-    # Extract all Stock Futures (FUTSTK)
     for sym in conn.symbols:
         if sym.get("segment") == conn.EXCHANGE_TYPE_NFO and sym.get("instrument_type") == "FUTSTK":
             base_sym = sym.get("symbol")
@@ -332,7 +319,6 @@ def run_definedge_30m_scan():
         print(f"Scanning {stock} ({idx}/{len(fno_stocks)})...", flush=True)
         if stock not in fut_by_stock: continue
 
-        # Get Nearest Expiry Future
         all_entries = fut_by_stock[stock]
         nearest_expiry = min(exp for exp, _ in all_entries)
         fut_contract = next(sym for exp, sym in all_entries if exp == nearest_expiry)
@@ -350,25 +336,28 @@ def run_definedge_30m_scan():
             if df_1m.empty: continue
 
             df_30m = resample_1m_to_custom_tf(df_1m, now_ist, TF_MINUTES)
-            if len(df_30m) < 60: continue # Need enough history for Stoch cycles
+            if len(df_30m) < 60: continue 
 
             df_30m["Stoch_D"] = calculate_stoch_d(df_30m, STOCH_K, STOCH_D)
             df_30m["ATR2"] = calculate_atr(df_30m, 2)
 
-            # Evaluate Crossover on the "Minus 1" Bar (The latest completed bar)
             current_idx = len(df_30m) - 1
             curr_d = df_30m.loc[current_idx, 'Stoch_D']
             prev_d = df_30m.loc[current_idx - 1, 'Stoch_D']
             
             if pd.isna(curr_d) or pd.isna(prev_d): continue
 
+            # ==========================================
+            # POINT 1 & POINT 5 TRIGGER DEFINITIONS
+            # ==========================================
+            stoch_crossed_31_downwards = (prev_d >= 31 and curr_d < 31)
+            stoch_crossed_69_upwards = (prev_d <= 69 and curr_d > 69)
+            
             match_data = False
             
-            # Check Bullish Stoch Crossover (Minus 1 Bar drops below 31)
-            if prev_d >= 31 and curr_d < 31:
+            if stoch_crossed_31_downwards:
                 match_data = evaluate_bullish_setup(df_30m, current_idx)
-            # Check Bearish Stoch Crossover (Minus 1 Bar crosses above 69)
-            elif prev_d <= 69 and curr_d > 69:
+            elif stoch_crossed_69_upwards:
                 match_data = evaluate_bearish_setup(df_30m, current_idx)
             
             if match_data:
@@ -399,3 +388,4 @@ def run_definedge_30m_scan():
 
 if __name__ == "__main__":
     run_definedge_30m_scan()
+
