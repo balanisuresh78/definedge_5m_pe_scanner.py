@@ -1,0 +1,34 @@
+name: Definedge 30m Ratio Scanner
+
+on:
+  schedule:
+    # Runs concurrently with the Stochastic scanner
+    - cron: '16,46 4-9 * * 1-5'
+    - cron: '1 10 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  run-30m-ratio-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@main
+
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@main
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install pyintegrate pyotp pandas numpy tabulate pytz
+
+      - name: Run 30m Ratio Scanner
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: |
+          if [ -f "definedge_30m_ratio_fut.py" ]; then
+            python definedge_30m_ratio_fut.py
+          else
+            echo "Error: definedge_30m_ratio_fut.py not found!"
+            exit 1
+          fi
