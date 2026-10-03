@@ -179,10 +179,12 @@ def evaluate_bullish_setup(df, current_idx):
         return False
         
     signal_found = False
+    signal_bar_time = ""
     for idx in up_bars.index:
         if idx > 0 and pd.notna(df.loc[idx, 'ATR2']) and pd.notna(df.loc[idx-1, 'ATR2']):
             if df.loc[idx, 'ATR2'] >= 1.33 * df.loc[idx-1, 'ATR2']:
                 signal_found = True
+                signal_bar_time = df.loc[idx, 'Datetime'].strftime("%d-%b %H:%M")
                 break
     if not signal_found: 
         return False
@@ -199,7 +201,14 @@ def evaluate_bullish_setup(df, current_idx):
     
     bodies = (down_bars['Open'] - down_bars['Close']).abs()
     if all(bodies < (0.70 * ref_atr)):
-        return {"Signal": "Bullish 🟢", "Ratio": round(ratio, 2), "Ref ATR": round(ref_atr, 2)}
+        return {
+            "Signal": "Bullish 🟢", 
+            "Ratio": round(ratio, 2), 
+            "Ref ATR": round(ref_atr, 2),
+            "ATR Signal Bar": signal_bar_time,
+            "Impulse Bars": len(impulse_df),
+            "Retrace Bars": len(correction_df)
+        }
     return False
 
 def evaluate_bearish_setup(df, current_idx):
@@ -235,10 +244,12 @@ def evaluate_bearish_setup(df, current_idx):
         return False
         
     signal_found = False
+    signal_bar_time = ""
     for idx in down_bars.index:
         if idx > 0 and pd.notna(df.loc[idx, 'ATR2']) and pd.notna(df.loc[idx-1, 'ATR2']):
             if df.loc[idx, 'ATR2'] >= 1.33 * df.loc[idx-1, 'ATR2']:
                 signal_found = True
+                signal_bar_time = df.loc[idx, 'Datetime'].strftime("%d-%b %H:%M")
                 break
     if not signal_found: 
         return False
@@ -255,7 +266,14 @@ def evaluate_bearish_setup(df, current_idx):
     
     bodies = (up_bars['Close'] - up_bars['Open']).abs()
     if all(bodies < (0.70 * ref_atr)):
-        return {"Signal": "Bearish 🔴", "Ratio": round(ratio, 2), "Ref ATR": round(ref_atr, 2)}
+        return {
+            "Signal": "Bearish 🔴", 
+            "Ratio": round(ratio, 2), 
+            "Ref ATR": round(ref_atr, 2),
+            "ATR Signal Bar": signal_bar_time,
+            "Impulse Bars": len(impulse_df),
+            "Retrace Bars": len(correction_df)
+        }
     return False
 
 # ==========================================
@@ -348,8 +366,6 @@ def run_definedge_30m_ratio_scan():
 
             current_idx = len(df_30m) - 1
             
-            # Since there is no Stochastic event trigger, we check both conditions 
-            # based purely on the recent price action peaks/troughs.
             bull_data = evaluate_bullish_setup(df_30m, current_idx)
             bear_data = evaluate_bearish_setup(df_30m, current_idx)
             
@@ -365,6 +381,9 @@ def run_definedge_30m_ratio_scan():
                     "Setup": match_data["Signal"],
                     "Bar Time": time_str,
                     "Ratio": match_data["Ratio"],
+                    "ATR Signal Bar": match_data["ATR Signal Bar"],
+                    "Impulse Bars": match_data["Impulse Bars"],
+                    "Retrace Bars": match_data["Retrace Bars"],
                     "Ref ATR": match_data["Ref ATR"],
                     "Close": round(curr_close, 2)
                 })
@@ -373,7 +392,6 @@ def run_definedge_30m_ratio_scan():
             continue
 
     if results:
-        # Sort entirely by highest Ratio descending
         res_df = pd.DataFrame(results).sort_values(by="Ratio", ascending=False).reset_index(drop=True)
         print("\n🎯 Matches found! Sending email notification...")
         print(tabulate(res_df, headers="keys", tablefmt="psql", showindex=False))
