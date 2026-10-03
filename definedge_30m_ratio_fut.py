@@ -144,137 +144,140 @@ def calculate_atr(df, period=2):
     return tr.rolling(window=period).mean()
 
 # ==========================================
-# 3. STRATEGY LOGIC EVALUATORS (RATIO BASED)
+# 3. STRATEGY LOGIC EVALUATORS (BAR RATIO)
 # ==========================================
 def evaluate_bullish_setup(df, current_idx):
-    # 1. Find the recent Closing Peak (Top of the UP impulse) inside 40-bar window
     search_window = df.loc[max(0, current_idx - 40):current_idx]
     peak_idx = search_window['Close'].idxmax()
     if peak_idx >= current_idx or peak_idx == max(0, current_idx - 40): 
         return False
         
-    # 2. Find the Trough (Bottom of the UP impulse) before the Peak
     trough_window = df.loc[max(0, peak_idx - 40):peak_idx]
     trough_idx = trough_window['Close'].idxmin()
     if trough_idx >= peak_idx or trough_idx == max(0, peak_idx - 40): 
         return False
         
-    # 3. Calculate Ratio
-    impulse_size = df.loc[peak_idx, 'Close'] - df.loc[trough_idx, 'Close']
-    retracement_size = df.loc[peak_idx, 'Close'] - df.loc[current_idx, 'Close']
-    
-    if retracement_size <= 0 or impulse_size <= 0:
-        return False
-        
-    ratio = impulse_size / retracement_size
-    if ratio < 1.0: 
-        return False # Retracement is larger than the impulse (trend broken)
-        
     impulse_df = df.loc[trough_idx:peak_idx]
-    correction_df = df.loc[peak_idx:current_idx]
+    correction_df = df.loc[peak_idx + 1 : current_idx]
+    if correction_df.empty:
+        return False
     
-    # 4. Impulse ATR Checks (<= 10 bars, >33% ATR2 surge)
+    # 1. Measure Impulse (Directional Up Bars)
     up_bars = impulse_df[impulse_df['Close'] > impulse_df['Open']]
-    if len(up_bars) > 10 or len(up_bars) == 0: 
+    imp_bars = len(up_bars)
+    
+    if imp_bars > 10 or imp_bars < 1: 
         return False
         
-    signal_found = False
-    signal_bar_time = ""
+    # 2. Check Bar/Time Ratio
+    ret_bars = len(correction_df)
+    ratio = ret_bars / imp_bars
+    if ratio < 1.0: 
+        return False 
+        
+    # 3. Price Containment Boundaries
+    rally_low = df.loc[trough_idx, 'Low']
+    rally_high = df.loc[peak_idx, 'High']
+    if correction_df['Low'].min() < rally_low or correction_df['High'].max() > rally_high:
+        return False
+
+    # 4. ATR Surge in Impulse
+    signal_time = None
     for idx in up_bars.index:
         if idx > 0 and pd.notna(df.loc[idx, 'ATR2']) and pd.notna(df.loc[idx-1, 'ATR2']):
             if df.loc[idx, 'ATR2'] >= 1.33 * df.loc[idx-1, 'ATR2']:
-                signal_found = True
-                signal_bar_time = df.loc[idx, 'Datetime'].strftime("%d-%b %H:%M")
+                signal_time = df.loc[idx, 'Datetime'].strftime("%d-%b %H:%M")
                 break
-    if not signal_found: 
+    if not signal_time: 
         return False
     
-    # 5. Reference ATR
+    # 5. Reference ATR Check
     atr_values = up_bars['ATR2'].sort_values(ascending=False)
     top_n = max(1, len(atr_values) // 2)
     ref_atr = atr_values.head(top_n).mean()
     
-    # 6. Correction Checks (Targeting DOWN Bars strictly < 70% of Ref ATR)
+    # 6. Corrective Bodies Check (< 70% Ref ATR)
     down_bars = correction_df[correction_df['Close'] < correction_df['Open']]
-    if len(down_bars) == 0: 
-        return False 
-    
-    bodies = (down_bars['Open'] - down_bars['Close']).abs()
-    if all(bodies < (0.70 * ref_atr)):
-        return {
-            "Signal": "Bullish 🟢", 
-            "Ratio": round(ratio, 2), 
-            "Ref ATR": round(ref_atr, 2),
-            "ATR Signal Bar": signal_bar_time,
-            "Impulse Bars": len(impulse_df),
-            "Retrace Bars": len(correction_df)
-        }
-    return False
+    if len(down_bars) > 0:
+        bodies = (down_bars['Open'] - down_bars['Close']).abs()
+        if not all(bodies < (0.70 * ref_atr)):
+            return False 
+
+    return {
+        "Signal": "Bullish 🟢", 
+        "Ratio": float(ratio), 
+        "Ref ATR": round(ref_atr, 2),
+        "ATR Signal": signal_time,
+        "Imp Bars": imp_bars,
+        "Ret Bars": ret_bars
+    }
+
 
 def evaluate_bearish_setup(df, current_idx):
-    # 1. Find the recent Closing Trough (Bottom of the DOWN impulse) inside 40-bar window
     search_window = df.loc[max(0, current_idx - 40):current_idx]
     trough_idx = search_window['Close'].idxmin()
     if trough_idx >= current_idx or trough_idx == max(0, current_idx - 40): 
         return False
         
-    # 2. Find the Peak (Top of the DOWN impulse) before the Trough
     peak_window = df.loc[max(0, trough_idx - 40):trough_idx]
     peak_idx = peak_window['Close'].idxmax()
     if peak_idx >= trough_idx or peak_idx == max(0, trough_idx - 40): 
         return False
         
-    # 3. Calculate Ratio
-    impulse_size = df.loc[peak_idx, 'Close'] - df.loc[trough_idx, 'Close']
-    retracement_size = df.loc[current_idx, 'Close'] - df.loc[trough_idx, 'Close']
-    
-    if retracement_size <= 0 or impulse_size <= 0:
-        return False
-        
-    ratio = impulse_size / retracement_size
-    if ratio < 1.0: 
-        return False # Retracement is larger than the impulse (trend broken)
-        
     impulse_df = df.loc[peak_idx:trough_idx]
-    correction_df = df.loc[trough_idx:current_idx]
+    correction_df = df.loc[trough_idx + 1 : current_idx]
+    if correction_df.empty:
+        return False
     
-    # 4. Impulse ATR Checks (<= 10 bars, >33% ATR2 surge)
+    # 1. Measure Impulse (Directional Down Bars)
     down_bars = impulse_df[impulse_df['Close'] < impulse_df['Open']]
-    if len(down_bars) > 10 or len(down_bars) == 0: 
+    imp_bars = len(down_bars)
+    
+    if imp_bars > 10 or imp_bars < 1: 
         return False
         
-    signal_found = False
-    signal_bar_time = ""
+    # 2. Check Bar/Time Ratio
+    ret_bars = len(correction_df)
+    ratio = ret_bars / imp_bars
+    if ratio < 1.0: 
+        return False 
+        
+    # 3. Price Containment Boundaries
+    drop_low = df.loc[trough_idx, 'Low']
+    drop_high = df.loc[peak_idx, 'High']
+    if correction_df['Low'].min() < drop_low or correction_df['High'].max() > drop_high:
+        return False
+
+    # 4. ATR Surge in Impulse
+    signal_time = None
     for idx in down_bars.index:
         if idx > 0 and pd.notna(df.loc[idx, 'ATR2']) and pd.notna(df.loc[idx-1, 'ATR2']):
             if df.loc[idx, 'ATR2'] >= 1.33 * df.loc[idx-1, 'ATR2']:
-                signal_found = True
-                signal_bar_time = df.loc[idx, 'Datetime'].strftime("%d-%b %H:%M")
+                signal_time = df.loc[idx, 'Datetime'].strftime("%d-%b %H:%M")
                 break
-    if not signal_found: 
+    if not signal_time: 
         return False
     
-    # 5. Reference ATR
+    # 5. Reference ATR Check
     atr_values = down_bars['ATR2'].sort_values(ascending=False)
     top_n = max(1, len(atr_values) // 2)
     ref_atr = atr_values.head(top_n).mean()
     
-    # 6. Correction Checks (Targeting UP Bars strictly < 70% of Ref ATR)
+    # 6. Corrective Bodies Check (< 70% Ref ATR)
     up_bars = correction_df[correction_df['Close'] > correction_df['Open']]
-    if len(up_bars) == 0: 
-        return False 
-    
-    bodies = (up_bars['Close'] - up_bars['Open']).abs()
-    if all(bodies < (0.70 * ref_atr)):
-        return {
-            "Signal": "Bearish 🔴", 
-            "Ratio": round(ratio, 2), 
-            "Ref ATR": round(ref_atr, 2),
-            "ATR Signal Bar": signal_bar_time,
-            "Impulse Bars": len(impulse_df),
-            "Retrace Bars": len(correction_df)
-        }
-    return False
+    if len(up_bars) > 0:
+        bodies = (up_bars['Close'] - up_bars['Open']).abs()
+        if not all(bodies < (0.70 * ref_atr)):
+            return False 
+
+    return {
+        "Signal": "Bearish 🔴", 
+        "Ratio": float(ratio), 
+        "Ref ATR": round(ref_atr, 2),
+        "ATR Signal": signal_time,
+        "Imp Bars": imp_bars,
+        "Ret Bars": ret_bars
+    }
 
 # ==========================================
 # 4. NOTIFICATION & MAIN ENGINE
@@ -290,7 +293,8 @@ def send_email_alert(results_df, timestamp):
     body = (
         f"<h3>30-Minute Futures Ratio Scan at {timestamp}</h3>"
         f"<ul>"
-        f"<li>Sorted by highest Impulse/Retracement Ratio (Ratio >= 1).</li>"
+        f"<li>Sorted by highest Time/Bar Ratio (Retracement Bars >= Impulse Bars).</li>"
+        f"<li>Pullback strictly contained within Impulse High/Low.</li>"
         f"<li>Corrective bodies strictly < 70% of Reference ATR.</li>"
         f"</ul>"
         f"{html_table}"
@@ -374,16 +378,16 @@ def run_definedge_30m_ratio_scan():
             if match_data:
                 time_str = df_30m.loc[current_idx, 'Datetime'].strftime("%d-%b %H:%M")
                 curr_close = df_30m.loc[current_idx, 'Close']
-                print(f"  ✅ MATCH: {fut_tsym} | {match_data['Signal']} | Ratio: {match_data['Ratio']}")
+                print(f"  ✅ MATCH: {fut_tsym} | {match_data['Signal']} | Bar Ratio: {match_data['Ratio']:.2f}x")
                 
                 results.append({
                     "Stock": stock,
                     "Setup": match_data["Signal"],
                     "Bar Time": time_str,
+                    "ATR Signal": match_data["ATR Signal"],
+                    "Imp Bars": match_data["Imp Bars"],
+                    "Ret Bars": match_data["Ret Bars"],
                     "Ratio": match_data["Ratio"],
-                    "ATR Signal Bar": match_data["ATR Signal Bar"],
-                    "Impulse Bars": match_data["Impulse Bars"],
-                    "Retrace Bars": match_data["Retrace Bars"],
                     "Ref ATR": match_data["Ref ATR"],
                     "Close": round(curr_close, 2)
                 })
@@ -393,11 +397,14 @@ def run_definedge_30m_ratio_scan():
 
     if results:
         res_df = pd.DataFrame(results).sort_values(by="Ratio", ascending=False).reset_index(drop=True)
+        # Format ratio string just before emailing
+        res_df["Ratio"] = res_df["Ratio"].apply(lambda x: f"{x:.2f}x")
+        
         print("\n🎯 Matches found! Sending email notification...")
         print(tabulate(res_df, headers="keys", tablefmt="psql", showindex=False))
         send_email_alert(res_df, now_ist_str)
     else:
-        print("\nNo setups matched the 30m Ratio strategy.")
+        print("\nNo setups matched the 30m Time/Bar Ratio strategy.")
 
 if __name__ == "__main__":
     run_definedge_30m_ratio_scan()
