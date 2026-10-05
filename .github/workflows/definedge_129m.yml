@@ -2,11 +2,11 @@ name: Definedge 129m FUT Scanner
 
 on:
   schedule:
-    # 11:25 IST (05:55 UTC)
+    # Candle 1 (09:15-11:24) -> Runs at 11:25 IST / 05:55 UTC
     - cron: '55 5 * * 1-5'
-    # 13:34 IST (08:04 UTC)
+    # Candle 2 (11:24-13:33) -> Runs at 13:34 IST / 08:04 UTC
     - cron: '4 8 * * 1-5'
-    # 15:31 IST (10:01 UTC)
+    # Candle 3 (13:33-15:30) -> Runs at 15:31 IST / 10:01 UTC
     - cron: '1 10 * * 1-5'
   workflow_dispatch:
 
