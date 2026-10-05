@@ -27,7 +27,7 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD")
 TF_MINUTES = 129               
 STOCH_K = 5                    
 STOCH_D = 3                    
-HIST_LOOKBACK_DAYS = 40       
+HIST_LOOKBACK_DAYS = 40        
 
 fno_stocks = [
     '360ONE', 'ABB', 'ABCAPITAL', 'ADANIENSOL', 'ADANIENT', 'ADANIGREEN', 'ADANIPORTS', 
@@ -139,11 +139,19 @@ def resample_1m_to_custom_tf(df_1m, now_ist, tf_minutes):
     return df_tf.reset_index(drop=True)
 
 def calculate_stoch_d(df, k_period=5, d_period=3):
+    """Calculates Slow Stochastic matching standard charting platforms."""
     low_min = df["Low"].rolling(window=k_period).min()
     high_max = df["High"].rolling(window=k_period).max()
     denom = (high_max - low_min).replace(0, np.nan)
+    
+    # Raw Fast %K
     raw_k = 100.0 * ((df["Close"] - low_min) / denom)
+    
+    # Smoothing %K (Slow Stochastic)
+    # Platforms typically apply a 3-period SMA to %K before calculating %D
     stoch_k_smoothed = raw_k.rolling(window=3).mean() 
+    
+    # Final %D (Moving average of the smoothed %K)
     return stoch_k_smoothed.rolling(window=d_period).mean()
 
 def calculate_atr(df, period=2):
@@ -157,11 +165,13 @@ def calculate_atr(df, period=2):
 # 3. STRATEGY LOGIC EVALUATORS
 # ==========================================
 def evaluate_bullish_setup(df, current_idx):
+    # 1. Find the recent Closing Peak (Top of the UP impulse)
     search_window = df.loc[max(0, current_idx - 40):current_idx]
     peak_idx = search_window['Close'].idxmax()
     if peak_idx >= current_idx or peak_idx == max(0, current_idx - 40): 
         return False
         
+    # 2. Find the Trough (Bottom of the UP impulse)
     trough_window = df.loc[max(0, peak_idx - 40):peak_idx]
     trough_idx = trough_window['Close'].idxmin()
     if trough_idx >= peak_idx or trough_idx == max(0, peak_idx - 40): 
@@ -170,6 +180,7 @@ def evaluate_bullish_setup(df, current_idx):
     impulse_df = df.loc[trough_idx:peak_idx]
     correction_df = df.loc[peak_idx:current_idx]
     
+    # 3. Impulse Checks (Targeting UP Bars)
     up_bars = impulse_df[impulse_df['Close'] > impulse_df['Open']]
     if len(up_bars) > 10 or len(up_bars) == 0: 
         return False
@@ -183,10 +194,12 @@ def evaluate_bullish_setup(df, current_idx):
     if not signal_found: 
         return False
     
+    # 4. Reference ATR
     atr_values = up_bars['ATR2'].sort_values(ascending=False)
     top_n = max(1, len(atr_values) // 2)
     ref_atr = atr_values.head(top_n).mean()
     
+    # 5. Correction Checks (Targeting DOWN Bars)
     down_bars = correction_df[correction_df['Close'] < correction_df['Open']]
     if len(down_bars) == 0: 
         return False 
@@ -197,11 +210,13 @@ def evaluate_bullish_setup(df, current_idx):
     return False
 
 def evaluate_bearish_setup(df, current_idx):
+    # 1. Find the recent Closing Trough (Bottom of the DOWN impulse)
     search_window = df.loc[max(0, current_idx - 40):current_idx]
     trough_idx = search_window['Close'].idxmin()
     if trough_idx >= current_idx or trough_idx == max(0, current_idx - 40): 
         return False
         
+    # 2. Find the Peak (Top of the DOWN impulse)
     peak_window = df.loc[max(0, trough_idx - 40):trough_idx]
     peak_idx = peak_window['Close'].idxmax()
     if peak_idx >= trough_idx or peak_idx == max(0, trough_idx - 40): 
@@ -210,6 +225,7 @@ def evaluate_bearish_setup(df, current_idx):
     impulse_df = df.loc[peak_idx:trough_idx]
     correction_df = df.loc[trough_idx:current_idx]
     
+    # 3. Impulse Checks (Targeting DOWN Bars)
     down_bars = impulse_df[impulse_df['Close'] < impulse_df['Open']]
     if len(down_bars) > 10 or len(down_bars) == 0: 
         return False
@@ -223,10 +239,12 @@ def evaluate_bearish_setup(df, current_idx):
     if not signal_found: 
         return False
     
+    # 4. Reference ATR
     atr_values = down_bars['ATR2'].sort_values(ascending=False)
     top_n = max(1, len(atr_values) // 2)
     ref_atr = atr_values.head(top_n).mean()
     
+    # 5. Correction Checks (Targeting UP Bars)
     up_bars = correction_df[correction_df['Close'] > correction_df['Open']]
     if len(up_bars) == 0: 
         return False 
@@ -327,7 +345,10 @@ def run_definedge_129m_scan():
             
             if pd.isna(curr_d) or pd.isna(prev_d): continue
 
+            # Bullish Trigger: Drops below 31
             stoch_crossed_31_downwards = (prev_d >= 31 and curr_d < 31)
+            
+            # Bearish Trigger: Crosses above 69 
             stoch_crossed_69_upwards = (prev_d <= 69 and curr_d > 69)
             
             match_data = False
