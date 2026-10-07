@@ -26,7 +26,7 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD")
 # Strategy Parameters
 STOCH_K = 5                    
 STOCH_D = 3                    
-HIST_LOOKBACK_DAYS = 120      # Expanded to ensure enough daily candles for Stoch cycles
+HIST_LOOKBACK_DAYS = 120       
 
 fno_stocks = [
     '360ONE', 'ABB', 'ABCAPITAL', 'ADANIENSOL', 'ADANIENT', 'ADANIGREEN', 'ADANIPORTS', 
@@ -93,7 +93,6 @@ def parse_historical_to_df(hist_generator):
     for col in ["Open", "High", "Low", "Close", "Volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Safe datetime parser for daily format strings
     if not np.issubdtype(df["Datetime"].dtype, np.datetime64):
         df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce", dayfirst=True)
 
@@ -117,15 +116,30 @@ def calculate_atr(df, period=2):
     return tr.rolling(window=period).mean()
 
 # ==========================================
-# 3. STRATEGY LOGIC EVALUATORS
+# 3. STRATEGY LOGIC EVALUATORS (DIVERGENCE)
 # ==========================================
-def evaluate_bullish_setup(df, current_idx):
-    search_window = df.loc[max(0, current_idx - 40):current_idx]
+def evaluate_bullish_divergence(df, current_idx):
+    curr_c = df.loc[current_idx, 'Close']
+    prev_c = df.loc[current_idx-1, 'Close']
+    m2_c = df.loc[current_idx-2, 'Close']
+    
+    curr_d = df.loc[current_idx, 'Stoch_D']
+    prev_d = df.loc[current_idx-1, 'Stoch_D']
+    m2_d = df.loc[current_idx-2, 'Stoch_D']
+    
+    # 1. Condition 1 & 2: Two consecutive bars of price dropping but Stoch rising
+    if not (curr_c < prev_c and curr_d > prev_d): return False
+    if not (prev_c < m2_c and prev_d > m2_d): return False
+
+    # 2. Trace back to find the Impulse Peak
+    search_window = df.loc[max(0, current_idx - 40):current_idx-2]
+    if search_window.empty: return False
     peak_idx = search_window['Close'].idxmax()
-    if peak_idx >= current_idx or peak_idx == max(0, current_idx - 40): 
+    if peak_idx >= current_idx - 1 or peak_idx == max(0, current_idx - 40): 
         return False
         
     trough_window = df.loc[max(0, peak_idx - 40):peak_idx]
+    if trough_window.empty: return False
     trough_idx = trough_window['Close'].idxmin()
     if trough_idx >= peak_idx or trough_idx == max(0, peak_idx - 40): 
         return False
@@ -133,39 +147,56 @@ def evaluate_bullish_setup(df, current_idx):
     impulse_df = df.loc[trough_idx:peak_idx]
     correction_df = df.loc[peak_idx:current_idx]
     
+    # 3. Target UP bars in impulse for Ref ATR
     up_bars = impulse_df[impulse_df['Close'] > impulse_df['Open']]
-    if len(up_bars) > 10 or len(up_bars) == 0: 
-        return False
+    if len(up_bars) == 0: return False
         
-    signal_found = False
-    for idx in up_bars.index:
-        if idx > 0 and pd.notna(df.loc[idx, 'ATR2']) and pd.notna(df.loc[idx-1, 'ATR2']):
-            if df.loc[idx, 'ATR2'] >= 1.33 * df.loc[idx-1, 'ATR2']:
-                signal_found = True
-                break
-    if not signal_found: 
-        return False
-    
     atr_values = up_bars['ATR2'].sort_values(ascending=False)
     top_n = max(1, len(atr_values) // 2)
     ref_atr = atr_values.head(top_n).mean()
     
+    # 4. Check Body Size for all correction DOWN bars (< 75% Ref ATR)
     down_bars = correction_df[correction_df['Close'] < correction_df['Open']]
-    if len(down_bars) == 0: 
-        return False 
+    if len(down_bars) == 0: return False 
     
     bodies = (down_bars['Open'] - down_bars['Close']).abs()
-    if all(bodies < (0.75 * ref_atr)):
-        return {"Signal": "Bullish 🟢", "Ref ATR": round(ref_atr, 2), "Max Body": round(bodies.max(), 2)}
-    return False
+    if not all(bodies < (0.75 * ref_atr)):
+        return False
+        
+    # Calculate separate divergences for display
+    live_div = curr_d - prev_d
+    minus1_div = prev_d - m2_d
+    
+    return {
+        "Signal": "Bull Div 🟢",
+        "Ref ATR": round(ref_atr, 2),
+        "Max Body": round(bodies.max(), 2),
+        "Live Div": f"+{live_div:.2f}",
+        "Minus1 Div": f"+{minus1_div:.2f}"
+    }
 
-def evaluate_bearish_setup(df, current_idx):
-    search_window = df.loc[max(0, current_idx - 40):current_idx]
+def evaluate_bearish_divergence(df, current_idx):
+    curr_c = df.loc[current_idx, 'Close']
+    prev_c = df.loc[current_idx-1, 'Close']
+    m2_c = df.loc[current_idx-2, 'Close']
+    
+    curr_d = df.loc[current_idx, 'Stoch_D']
+    prev_d = df.loc[current_idx-1, 'Stoch_D']
+    m2_d = df.loc[current_idx-2, 'Stoch_D']
+    
+    # 1. Condition 1 & 2: Two consecutive bars of price rising but Stoch dropping
+    if not (curr_c > prev_c and curr_d < prev_d): return False
+    if not (prev_c > m2_c and prev_d < m2_d): return False
+
+    # 2. Trace back to find the Impulse Trough
+    search_window = df.loc[max(0, current_idx - 40):current_idx-2]
+    if search_window.empty: return False
     trough_idx = search_window['Close'].idxmin()
-    if trough_idx >= current_idx or trough_idx == max(0, current_idx - 40): 
+    if trough_idx >= current_idx - 1 or trough_idx == max(0, current_idx - 40): 
         return False
         
     peak_window = df.loc[max(0, trough_idx - 40):trough_idx]
+    if peak_window.empty: return False
     peak_idx = peak_window['Close'].idxmax()
     if peak_idx >= trough_idx or peak_idx == max(0, trough_idx - 40): 
         return False
@@ -173,31 +204,33 @@ def evaluate_bearish_setup(df, current_idx):
     impulse_df = df.loc[peak_idx:trough_idx]
     correction_df = df.loc[trough_idx:current_idx]
     
+    # 3. Target DOWN bars in impulse for Ref ATR
     down_bars = impulse_df[impulse_df['Close'] < impulse_df['Open']]
-    if len(down_bars) > 10 or len(down_bars) == 0: 
-        return False
+    if len(down_bars) == 0: return False
         
-    signal_found = False
-    for idx in down_bars.index:
-        if idx > 0 and pd.notna(df.loc[idx, 'ATR2']) and pd.notna(df.loc[idx-1, 'ATR2']):
-            if df.loc[idx, 'ATR2'] >= 1.33 * df.loc[idx-1, 'ATR2']:
-                signal_found = True
-                break
-    if not signal_found: 
-        return False
-    
     atr_values = down_bars['ATR2'].sort_values(ascending=False)
     top_n = max(1, len(atr_values) // 2)
     ref_atr = atr_values.head(top_n).mean()
     
+    # 4. Check Body Size for all correction UP bars (< 75% Ref ATR)
     up_bars = correction_df[correction_df['Close'] > correction_df['Open']]
-    if len(up_bars) == 0: 
-        return False 
+    if len(up_bars) == 0: return False 
     
     bodies = (up_bars['Close'] - up_bars['Open']).abs()
-    if all(bodies < (0.75 * ref_atr)):
-        return {"Signal": "Bearish 🔴", "Ref ATR": round(ref_atr, 2), "Max Body": round(bodies.max(), 2)}
-    return False
+    if not all(bodies < (0.75 * ref_atr)):
+        return False
+        
+    # Calculate separate divergences for display
+    live_div = curr_d - prev_d
+    minus1_div = prev_d - m2_d
+    
+    return {
+        "Signal": "Bear Div 🔴",
+        "Ref ATR": round(ref_atr, 2),
+        "Max Body": round(bodies.max(), 2),
+        "Live Div": f"{live_div:.2f}",
+        "Minus1 Div": f"{minus1_div:.2f}"
+    }
 
 # ==========================================
 # 4. NOTIFICATION & MAIN ENGINE
@@ -205,13 +238,17 @@ def evaluate_bearish_setup(df, current_idx):
 def send_email_alert(results_df, timestamp):
     if not APP_PASSWORD: return
     msg = EmailMessage()
-    msg["Subject"] = f"🎯 Daily Futures Alert: ATR Retracement Setup ({timestamp})"
+    msg["Subject"] = f"🎯 Daily Divergence Alert: 2-Bar Setup ({timestamp})"
     msg["From"] = SENDER_EMAIL
     msg["To"] = RECEIVER_EMAIL
 
     html_table = results_df.to_html(index=False, justify="center")
     body = (
-        f"<h3>Daily Stock Futures Scan at {timestamp}</h3>"
+        f"<h3>Daily Futures Divergence Scan at {timestamp}</h3>"
+        f"<ul>"
+        f"<li>Setup requires two consecutive bars of Price & Stochastic (5,3,3) diverging.</li>"
+        f"<li>Corrective bodies are strictly < 75% of Reference ATR.</li>"
+        f"</ul>"
         f"{html_table}"
     )
 
@@ -230,7 +267,7 @@ def run_definedge_daily_scan():
     ist_tz = pytz.timezone("Asia/Kolkata")
     now_ist = datetime.now(ist_tz)
     now_ist_str = now_ist.strftime("%d-%b %H:%M:%S")
-    print(f"[{now_ist_str}] Logging into Definedge for Daily Futures Scan...")
+    print(f"[{now_ist_str}] Logging into Definedge for Daily Divergence Scan...")
 
     conn = ConnectToIntegrate()
     try:
@@ -268,7 +305,6 @@ def run_definedge_daily_scan():
         fut_tsym = fut_contract["trading_symbol"]
 
         try:
-            # TIMEFRAME_TYPE_DAY pulls native EOD candles instantly
             hist_gen = ic.historical_data(
                 exchange=conn.EXCHANGE_TYPE_NFO,
                 trading_symbol=fut_tsym,
@@ -289,34 +325,24 @@ def run_definedge_daily_scan():
             df_daily["ATR2"] = calculate_atr(df_daily, 2)
 
             current_idx = len(df_daily) - 1
-            curr_d = df_daily.loc[current_idx, 'Stoch_D']
-            prev_d = df_daily.loc[current_idx - 1, 'Stoch_D']
             
-            if pd.isna(curr_d) or pd.isna(prev_d): continue
-
-            # Bullish: Drops below 31
-            stoch_crossed_31_downwards = (prev_d >= 31 and curr_d < 31)
-            # Bearish: Crosses above 69
-            stoch_crossed_69_upwards = (prev_d <= 69 and curr_d > 69)
+            # Check both Divergence logic engines
+            bull_data = evaluate_bullish_divergence(df_daily, current_idx)
+            bear_data = evaluate_bearish_divergence(df_daily, current_idx)
             
-            match_data = False
-            
-            if stoch_crossed_31_downwards:
-                match_data = evaluate_bullish_setup(df_daily, current_idx)
-            elif stoch_crossed_69_upwards:
-                match_data = evaluate_bearish_setup(df_daily, current_idx)
+            match_data = bull_data if bull_data else bear_data
             
             if match_data:
                 time_str = df_daily.loc[current_idx, 'Datetime'].strftime("%d-%b-%Y")
-                curr_close = df_daily.loc[current_idx, 'Close']
-                print(f"  ✅ MATCH: {fut_tsym} | {match_data['Signal']} | Prev %D: {round(prev_d,1)} | Live %D: {round(curr_d,1)}")
+                
+                print(f"  ✅ MATCH: {fut_tsym} | {match_data['Signal']} | Live Div: {match_data['Live Div']} | -1 Div: {match_data['Minus1 Div']}")
                 
                 results.append({
                     "Stock": stock,
                     "Setup": match_data["Signal"],
                     "Bar Date": time_str,
-                    "Prev %D": round(prev_d, 2),
-                    "Live %D": round(curr_d, 2),
+                    "Live Div": match_data["Live Div"],
+                    "Minus1 Div": match_data["Minus1 Div"],
                     "Ref ATR": match_data["Ref ATR"],
                     "Max Body": match_data["Max Body"]
                 })
@@ -330,7 +356,7 @@ def run_definedge_daily_scan():
         print(tabulate(res_df, headers="keys", tablefmt="psql", showindex=False))
         send_email_alert(res_df, now_ist_str)
     else:
-        print("\nNo setups matched the Daily ATR Correction strategy.")
+        print("\nNo setups matched the Daily Divergence strategy.")
 
 if __name__ == "__main__":
     run_definedge_daily_scan()
