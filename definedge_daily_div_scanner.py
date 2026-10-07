@@ -103,18 +103,12 @@ def parse_historical_to_df(hist_generator):
 
 def calculate_stoch_533(df, k_period=5, smooth_k=3, d_period=3):
     """Calculates True Slow Stochastic (5, 3, 3)"""
-    # 1. Fast %K
     low_min = df["Low"].rolling(window=k_period).min()
     high_max = df["High"].rolling(window=k_period).max()
     denom = (high_max - low_min).replace(0, np.nan)
     fast_k = 100.0 * ((df["Close"] - low_min) / denom)
-    
-    # 2. Slow %K (Smoothed Fast %K by 3 periods)
     slow_k = fast_k.rolling(window=smooth_k).mean() 
-    
-    # 3. Slow %D (Smoothed Slow %K by 3 periods)
     slow_d = slow_k.rolling(window=d_period).mean()
-    
     return slow_d
 
 def calculate_atr(df, period=2):
@@ -136,14 +130,11 @@ def evaluate_bullish_divergence(df, current_idx):
     prev_d = df.loc[current_idx-1, 'Stoch_D']
     m2_d = df.loc[current_idx-2, 'Stoch_D']
     
-    # 1. Evaluate Divergences Independently
-    # Live Div: Today's Close < Yesterday's Close AND Today's Stoch > Yesterday's Stoch
+    # Live Div: Today vs Yesterday
     live_div = (curr_c < prev_c) and (curr_d > prev_d)
-    
-    # M1 Div: Yesterday's Close < DayBefore's Close AND Yesterday's Stoch > DayBefore's Stoch
+    # M1 Div: Yesterday vs Day Before
     m1_div = (prev_c < m2_c) and (prev_d > m2_d)
     
-    # Require at least one of them to be true
     if not (live_div or m1_div): 
         return False
         
@@ -154,7 +145,6 @@ def evaluate_bullish_divergence(df, current_idx):
     else:
         div_type = "-1 Only"
 
-    # 2. Trace back to find the Impulse Peak
     search_window = df.loc[max(0, current_idx - 40):current_idx-1]
     if search_window.empty: return False
     peak_idx = search_window['Close'].idxmax()
@@ -170,7 +160,6 @@ def evaluate_bullish_divergence(df, current_idx):
     impulse_df = df.loc[trough_idx:peak_idx]
     correction_df = df.loc[peak_idx:current_idx]
     
-    # 3. Target UP bars in impulse for Ref ATR
     up_bars = impulse_df[impulse_df['Close'] > impulse_df['Open']]
     if len(up_bars) == 0: return False
         
@@ -178,7 +167,6 @@ def evaluate_bullish_divergence(df, current_idx):
     top_n = max(1, len(atr_values) // 2)
     ref_atr = atr_values.head(top_n).mean()
     
-    # 4. Check Body Size for all correction DOWN bars (< 75% Ref ATR)
     down_bars = correction_df[correction_df['Close'] < correction_df['Open']]
     if len(down_bars) == 0: return False 
     
@@ -186,7 +174,6 @@ def evaluate_bullish_divergence(df, current_idx):
     if not all(bodies < (0.75 * ref_atr)):
         return False
         
-    # Formatting output for email
     live_out = "YES" if live_div else "NO"
     m1_out = "YES" if m1_div else "NO"
     
@@ -208,14 +195,11 @@ def evaluate_bearish_divergence(df, current_idx):
     prev_d = df.loc[current_idx-1, 'Stoch_D']
     m2_d = df.loc[current_idx-2, 'Stoch_D']
     
-    # 1. Evaluate Divergences Independently
-    # Live Div: Today's Close > Yesterday's Close AND Today's Stoch < Yesterday's Stoch
+    # Live Div: Today vs Yesterday
     live_div = (curr_c > prev_c) and (curr_d < prev_d)
-    
-    # M1 Div: Yesterday's Close > DayBefore's Close AND Yesterday's Stoch < DayBefore's Stoch
+    # M1 Div: Yesterday vs Day Before
     m1_div = (prev_c > m2_c) and (prev_d < m2_d)
     
-    # Require at least one of them to be true
     if not (live_div or m1_div): 
         return False
         
@@ -226,7 +210,6 @@ def evaluate_bearish_divergence(df, current_idx):
     else:
         div_type = "-1 Only"
 
-    # 2. Trace back to find the Impulse Trough
     search_window = df.loc[max(0, current_idx - 40):current_idx-1]
     if search_window.empty: return False
     trough_idx = search_window['Close'].idxmin()
@@ -242,7 +225,6 @@ def evaluate_bearish_divergence(df, current_idx):
     impulse_df = df.loc[peak_idx:trough_idx]
     correction_df = df.loc[trough_idx:current_idx]
     
-    # 3. Target DOWN bars in impulse for Ref ATR
     down_bars = impulse_df[impulse_df['Close'] < impulse_df['Open']]
     if len(down_bars) == 0: return False
         
@@ -250,7 +232,6 @@ def evaluate_bearish_divergence(df, current_idx):
     top_n = max(1, len(atr_values) // 2)
     ref_atr = atr_values.head(top_n).mean()
     
-    # 4. Check Body Size for all correction UP bars (< 75% Ref ATR)
     up_bars = correction_df[correction_df['Close'] > correction_df['Open']]
     if len(up_bars) == 0: return False 
     
@@ -258,7 +239,6 @@ def evaluate_bearish_divergence(df, current_idx):
     if not all(bodies < (0.75 * ref_atr)):
         return False
         
-    # Formatting output for email
     live_out = "YES" if live_div else "NO"
     m1_out = "YES" if m1_div else "NO"
     
@@ -285,7 +265,7 @@ def send_email_alert(results_df, timestamp):
     body = (
         f"<h3>Daily Futures Divergence Scan at {timestamp}</h3>"
         f"<ul>"
-        f"<li>Filters for Price & Stochastic (5,3,3) diverging on the Live Bar, -1 Bar, or Both.</li>"
+        f"<li>Filters for Price & Stochastic (5,3,3) diverging on the Live Bar (0 vs -1), -1 Bar (-1 vs -2), or Both.</li>"
         f"<li>Corrective bodies are strictly < 75% of Reference ATR.</li>"
         f"</ul>"
         f"{html_table}"
@@ -354,8 +334,10 @@ def run_definedge_daily_scan():
             df_daily = parse_historical_to_df(hist_gen)
             if df_daily.empty: continue
 
-            # Drop incomplete forming daily candle if run before 15:30
-            if now_ist.time() < datetime.strptime("15:30", "%H:%M").time():
+            # FIXED: Only drop the last candle if it's ACTUALLY today's incomplete candle
+            # This prevents deleting yesterday's candle when running the script in the morning
+            last_candle_date = df_daily.loc[df_daily.index[-1], 'Datetime'].date()
+            if last_candle_date == now_ist.date() and now_ist.time() < datetime.strptime("15:30", "%H:%M").time():
                 df_daily = df_daily.iloc[:-1]
 
             if len(df_daily) < 60: continue 
@@ -365,11 +347,9 @@ def run_definedge_daily_scan():
 
             current_idx = len(df_daily) - 1
             
-            # Require at least 3 bars of history from current index to compare Live vs Prev vs M2
             if current_idx < 2: continue
             if pd.isna(df_daily.loc[current_idx, 'Stoch_D']) or pd.isna(df_daily.loc[current_idx-2, 'Stoch_D']): continue
             
-            # Check both Divergence logic engines
             bull_data = evaluate_bullish_divergence(df_daily, current_idx)
             bear_data = evaluate_bearish_divergence(df_daily, current_idx)
             
