@@ -102,7 +102,6 @@ def parse_historical_to_df(hist_generator):
     return df.reset_index(drop=True)
 
 def calculate_stoch_533(df, k_period=5, smooth_k=3, d_period=3):
-    """Calculates True Slow Stochastic (5, 3, 3)"""
     low_min = df["Low"].rolling(window=k_period).min()
     high_max = df["High"].rolling(window=k_period).max()
     denom = (high_max - low_min).replace(0, np.nan)
@@ -130,7 +129,6 @@ def evaluate_bullish_divergence(df, current_idx):
     prev_d = df.loc[current_idx-1, 'Stoch_D']
     m2_d = df.loc[current_idx-2, 'Stoch_D']
     
-    # Evaluate Divergences Independently
     live_div = (curr_c < prev_c) and (curr_d > prev_d)
     m1_div = (prev_c < m2_c) and (prev_d > m2_d)
     
@@ -147,7 +145,6 @@ def evaluate_bullish_divergence(df, current_idx):
     ref_atr = df.loc[current_idx, 'ATR100']
     if pd.isna(ref_atr): return False
     
-    # Check body size ONLY on the specific bars that triggered the divergence
     bars_to_check = []
     if live_div: bars_to_check.append(current_idx)
     if m1_div: bars_to_check.append(current_idx-1)
@@ -157,9 +154,8 @@ def evaluate_bullish_divergence(df, current_idx):
         body = abs(df.loc[idx, 'Open'] - df.loc[idx, 'Close'])
         max_body = max(max_body, body)
         if body >= (0.67 * ref_atr):
-            return False # Reject setup if the diverging bar's body is too large
+            return False 
         
-    # Formatting output for email
     live_out = "YES" if live_div else "NO"
     m1_out = "YES" if m1_div else "NO"
     
@@ -181,7 +177,6 @@ def evaluate_bearish_divergence(df, current_idx):
     prev_d = df.loc[current_idx-1, 'Stoch_D']
     m2_d = df.loc[current_idx-2, 'Stoch_D']
     
-    # Evaluate Divergences Independently
     live_div = (curr_c > prev_c) and (curr_d < prev_d)
     m1_div = (prev_c > m2_c) and (prev_d < m2_d)
     
@@ -198,7 +193,6 @@ def evaluate_bearish_divergence(df, current_idx):
     ref_atr = df.loc[current_idx, 'ATR100']
     if pd.isna(ref_atr): return False
     
-    # Check body size ONLY on the specific bars that triggered the divergence
     bars_to_check = []
     if live_div: bars_to_check.append(current_idx)
     if m1_div: bars_to_check.append(current_idx-1)
@@ -208,9 +202,8 @@ def evaluate_bearish_divergence(df, current_idx):
         body = abs(df.loc[idx, 'Open'] - df.loc[idx, 'Close'])
         max_body = max(max_body, body)
         if body >= (0.67 * ref_atr):
-            return False # Reject setup if the diverging bar's body is too large
+            return False 
         
-    # Formatting output for email
     live_out = "YES" if live_div else "NO"
     m1_out = "YES" if m1_div else "NO"
     
@@ -271,7 +264,7 @@ def run_definedge_daily_scan():
         print(f"❌ Definedge Login Failed: {auth_err}")
         return
 
-    today_date = now_ist.date()
+    today_date_local = now_ist.date()
     stock_set = set(fno_stocks)
     fut_by_stock = {}
 
@@ -280,7 +273,7 @@ def run_definedge_daily_scan():
             base_sym = sym.get("symbol")
             if base_sym in stock_set:
                 exp_date = parse_expiry_date(sym.get("expiry"))
-                if exp_date and exp_date >= today_date:
+                if exp_date and exp_date >= today_date_local:
                     fut_by_stock.setdefault(base_sym, []).append((exp_date, sym))
 
     results = []
@@ -297,6 +290,7 @@ def run_definedge_daily_scan():
         fut_tsym = fut_contract["trading_symbol"]
 
         try:
+            # 1. Fetch historical daily data
             hist_gen = ic.historical_data(
                 exchange=conn.EXCHANGE_TYPE_NFO,
                 trading_symbol=fut_tsym,
@@ -307,10 +301,34 @@ def run_definedge_daily_scan():
             df_daily = parse_historical_to_df(hist_gen)
             if df_daily.empty: continue
 
-            # Only drop the last candle if it's ACTUALLY today's incomplete candle
-            last_candle_date = df_daily.loc[df_daily.index[-1], 'Datetime'].date()
-            if last_candle_date == now_ist.date() and now_ist.time() < datetime.strptime("15:30", "%H:%M").time():
-                df_daily = df_daily.iloc[:-1]
+            # 2. HYBRID FETCH FIX: Ensure today's EOD candle is evaluated even if Definedge API delays it.
+            last_date_in_db = df_daily.loc[df_daily.index[-1], 'Datetime'].date()
+            
+            if last_date_in_db < today_date_local:
+                # API is lagging. Fetch today's intraday tick data to build the Live Daily Candle.
+                today_start = datetime.combine(today_date_local, datetime.min.time())
+                try:
+                    intra_gen = ic.historical_data(
+                        exchange=conn.EXCHANGE_TYPE_NFO,
+                        trading_symbol=fut_tsym,
+                        timeframe=conn.TIMEFRAME_TYPE_MIN,  # Fetch 1-min data for today only
+                        start=today_start,
+                        end=end_time,
+                    )
+                    df_intra = parse_historical_to_df(intra_gen)
+                    
+                    if not df_intra.empty:
+                        new_candle = pd.DataFrame([{
+                            "Datetime": pd.to_datetime(today_date_local),
+                            "Open": df_intra.iloc[0]['Open'],
+                            "High": df_intra['High'].max(),
+                            "Low": df_intra['Low'].min(),
+                            "Close": df_intra.iloc[-1]['Close'],
+                            "Volume": df_intra['Volume'].sum()
+                        }])
+                        df_daily = pd.concat([df_daily, new_candle], ignore_index=True)
+                except Exception:
+                    pass # Fallback to whatever the API provided if this fails
 
             if len(df_daily) < 110: continue 
 
@@ -343,13 +361,12 @@ def run_definedge_daily_scan():
                     "Max Body": match_data["Max Body"]
                 })
 
-        except Exception:
+        except Exception as e:
             continue
 
     if results:
         res_df = pd.DataFrame(results)
         
-        # Exact Custom Sorting (Bullish First, Both > Live > -1)
         setup_order = ["Bull Div 🟢", "Bear Div 🔴"]
         match_order = ["Both", "Live Only", "-1 Only"]
         
