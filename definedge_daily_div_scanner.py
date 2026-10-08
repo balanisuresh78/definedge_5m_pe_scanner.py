@@ -27,7 +27,7 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD")
 STOCH_K_PERIOD = 5             
 STOCH_SMOOTH_K = 3             
 STOCH_D_PERIOD = 3             
-HIST_LOOKBACK_DAYS = 250       # Increased to 250 to calculate ATR(100) + 40 bar impulse search
+HIST_LOOKBACK_DAYS = 250       
 
 fno_stocks = [
     '360ONE', 'ABB', 'ABCAPITAL', 'ADANIENSOL', 'ADANIENT', 'ADANIGREEN', 'ADANIPORTS', 
@@ -130,7 +130,7 @@ def evaluate_bullish_divergence(df, current_idx):
     prev_d = df.loc[current_idx-1, 'Stoch_D']
     m2_d = df.loc[current_idx-2, 'Stoch_D']
     
-    # 1. Evaluate Divergences Independently
+    # Evaluate Divergences Independently
     live_div = (curr_c < prev_c) and (curr_d > prev_d)
     m1_div = (prev_c < m2_c) and (prev_d > m2_d)
     
@@ -144,32 +144,20 @@ def evaluate_bullish_divergence(df, current_idx):
     else:
         div_type = "-1 Only"
 
-    # 2. Trace back to find the Impulse Peak to define the Correction Phase
-    search_window = df.loc[max(0, current_idx - 40):current_idx-1]
-    if search_window.empty: return False
-    peak_idx = search_window['Close'].idxmax()
-    if peak_idx >= current_idx or peak_idx == max(0, current_idx - 40): 
-        return False
-        
-    trough_window = df.loc[max(0, peak_idx - 40):peak_idx]
-    if trough_window.empty: return False
-    trough_idx = trough_window['Close'].idxmin()
-    if trough_idx >= peak_idx or trough_idx == max(0, peak_idx - 40): 
-        return False
-        
-    correction_df = df.loc[peak_idx:current_idx]
-    
-    # 3. Pull ATR(100) Reference from Current Bar
     ref_atr = df.loc[current_idx, 'ATR100']
     if pd.isna(ref_atr): return False
     
-    # 4. Check Body Size for all correction DOWN bars (< 67% of ATR100)
-    down_bars = correction_df[correction_df['Close'] < correction_df['Open']]
-    if len(down_bars) == 0: return False 
+    # Check body size ONLY on the specific bars that triggered the divergence
+    bars_to_check = []
+    if live_div: bars_to_check.append(current_idx)
+    if m1_div: bars_to_check.append(current_idx-1)
     
-    bodies = (down_bars['Open'] - down_bars['Close']).abs()
-    if not all(bodies < (0.67 * ref_atr)):
-        return False
+    max_body = 0
+    for idx in bars_to_check:
+        body = abs(df.loc[idx, 'Open'] - df.loc[idx, 'Close'])
+        max_body = max(max_body, body)
+        if body >= (0.67 * ref_atr):
+            return False # Reject setup if the diverging bar's body is too large
         
     # Formatting output for email
     live_out = "YES" if live_div else "NO"
@@ -179,7 +167,7 @@ def evaluate_bullish_divergence(df, current_idx):
         "Signal": "Bull Div 🟢",
         "Div Match": div_type,
         "Ref ATR": round(ref_atr, 2),
-        "Max Body": round(bodies.max(), 2),
+        "Max Body": round(max_body, 2),
         "Live Div": live_out,
         "Minus1 Div": m1_out
     }
@@ -193,7 +181,7 @@ def evaluate_bearish_divergence(df, current_idx):
     prev_d = df.loc[current_idx-1, 'Stoch_D']
     m2_d = df.loc[current_idx-2, 'Stoch_D']
     
-    # 1. Evaluate Divergences Independently
+    # Evaluate Divergences Independently
     live_div = (curr_c > prev_c) and (curr_d < prev_d)
     m1_div = (prev_c > m2_c) and (prev_d < m2_d)
     
@@ -206,33 +194,21 @@ def evaluate_bearish_divergence(df, current_idx):
         div_type = "Live Only"
     else:
         div_type = "-1 Only"
-
-    # 2. Trace back to find the Impulse Trough to define the Correction Phase
-    search_window = df.loc[max(0, current_idx - 40):current_idx-1]
-    if search_window.empty: return False
-    trough_idx = search_window['Close'].idxmin()
-    if trough_idx >= current_idx or trough_idx == max(0, current_idx - 40): 
-        return False
-        
-    peak_window = df.loc[max(0, trough_idx - 40):trough_idx]
-    if peak_window.empty: return False
-    peak_idx = peak_window['Close'].idxmax()
-    if peak_idx >= trough_idx or peak_idx == max(0, trough_idx - 40): 
-        return False
-        
-    correction_df = df.loc[trough_idx:current_idx]
     
-    # 3. Pull ATR(100) Reference from Current Bar
     ref_atr = df.loc[current_idx, 'ATR100']
     if pd.isna(ref_atr): return False
     
-    # 4. Check Body Size for all correction UP bars (< 67% of ATR100)
-    up_bars = correction_df[correction_df['Close'] > correction_df['Open']]
-    if len(up_bars) == 0: return False 
+    # Check body size ONLY on the specific bars that triggered the divergence
+    bars_to_check = []
+    if live_div: bars_to_check.append(current_idx)
+    if m1_div: bars_to_check.append(current_idx-1)
     
-    bodies = (up_bars['Close'] - up_bars['Open']).abs()
-    if not all(bodies < (0.67 * ref_atr)):
-        return False
+    max_body = 0
+    for idx in bars_to_check:
+        body = abs(df.loc[idx, 'Open'] - df.loc[idx, 'Close'])
+        max_body = max(max_body, body)
+        if body >= (0.67 * ref_atr):
+            return False # Reject setup if the diverging bar's body is too large
         
     # Formatting output for email
     live_out = "YES" if live_div else "NO"
@@ -242,7 +218,7 @@ def evaluate_bearish_divergence(df, current_idx):
         "Signal": "Bear Div 🔴",
         "Div Match": div_type,
         "Ref ATR": round(ref_atr, 2),
-        "Max Body": round(bodies.max(), 2),
+        "Max Body": round(max_body, 2),
         "Live Div": live_out,
         "Minus1 Div": m1_out
     }
@@ -263,7 +239,7 @@ def send_email_alert(results_df, timestamp):
         f"<ul>"
         f"<li>Filters for Price & Stochastic (5,3,3) diverging on the Live Bar (0 vs -1), -1 Bar (-1 vs -2), or Both.</li>"
         f"<li>Reference ATR uses standard ATR(100).</li>"
-        f"<li>Corrective bodies are strictly < 67% of ATR(100).</li>"
+        f"<li>Diverging bar bodies are strictly < 0.67 * ATR(100).</li>"
         f"</ul>"
         f"{html_table}"
     )
