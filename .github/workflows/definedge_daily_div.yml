@@ -2,8 +2,8 @@ name: Definedge Daily Divergence Scanner
 
 on:
   schedule:
-    # Daily close (15:30) -> Runs at 15:31 IST / 10:01 UTC
-    - cron: '1 10 * * 1-5'
+    # Runs at 15:41 IST / 10:11 UTC (After CAS and F&O market close)
+    - cron: '11 10 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Dependencies
-        run: pip install pyintegrate pyotp pandas numpy tabulate pytz
+        run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
 
       - name: Run Daily Divergence Scanner
         env:
