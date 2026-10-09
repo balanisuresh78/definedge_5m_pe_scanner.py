@@ -24,10 +24,10 @@ RECEIVER_EMAIL = "balanisuresh@gmail.com"
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 
 # Strategy Parameters
-STOCH_K_PERIOD = 5             
-STOCH_SMOOTH_K = 3             
-STOCH_D_PERIOD = 3             
-HIST_LOOKBACK_DAYS = 250       
+STOCH_K_PERIOD = 5               
+STOCH_SMOOTH_K = 3               
+STOCH_D_PERIOD = 3               
+HIST_LOOKBACK_DAYS = 250        
 
 fno_stocks = [
     '360ONE', 'ABB', 'ABCAPITAL', 'ADANIENSOL', 'ADANIENT', 'ADANIGREEN', 'ADANIPORTS', 
@@ -149,13 +149,15 @@ def evaluate_bullish_divergence(df, current_idx):
     if live_div: bars_to_check.append(current_idx)
     if m1_div: bars_to_check.append(current_idx-1)
     
-    max_body = 0
     for idx in bars_to_check:
         body = abs(df.loc[idx, 'Open'] - df.loc[idx, 'Close'])
-        max_body = max(max_body, body)
         if body >= (0.67 * ref_atr):
             return False 
-        
+            
+    # Always compute Live Bar Body and Ratio
+    live_body = abs(df.loc[current_idx, 'Open'] - df.loc[current_idx, 'Close'])
+    ratio = round(ref_atr / live_body, 2) if live_body > 0 else 0.0
+
     live_out = "YES" if live_div else "NO"
     m1_out = "YES" if m1_div else "NO"
     
@@ -163,7 +165,8 @@ def evaluate_bullish_divergence(df, current_idx):
         "Signal": "Bull Div 🟢",
         "Div Match": div_type,
         "Ref ATR": round(ref_atr, 2),
-        "Max Body": round(max_body, 2),
+        "Live Body": round(live_body, 2),
+        "Ratio": ratio,
         "Live Div": live_out,
         "Minus1 Div": m1_out
     }
@@ -197,13 +200,15 @@ def evaluate_bearish_divergence(df, current_idx):
     if live_div: bars_to_check.append(current_idx)
     if m1_div: bars_to_check.append(current_idx-1)
     
-    max_body = 0
     for idx in bars_to_check:
         body = abs(df.loc[idx, 'Open'] - df.loc[idx, 'Close'])
-        max_body = max(max_body, body)
         if body >= (0.67 * ref_atr):
             return False 
-        
+            
+    # Always compute Live Bar Body and Ratio
+    live_body = abs(df.loc[current_idx, 'Open'] - df.loc[current_idx, 'Close'])
+    ratio = round(ref_atr / live_body, 2) if live_body > 0 else 0.0
+
     live_out = "YES" if live_div else "NO"
     m1_out = "YES" if m1_div else "NO"
     
@@ -211,7 +216,8 @@ def evaluate_bearish_divergence(df, current_idx):
         "Signal": "Bear Div 🔴",
         "Div Match": div_type,
         "Ref ATR": round(ref_atr, 2),
-        "Max Body": round(max_body, 2),
+        "Live Body": round(live_body, 2),
+        "Ratio": ratio,
         "Live Div": live_out,
         "Minus1 Div": m1_out
     }
@@ -226,13 +232,27 @@ def send_email_alert(results_df, timestamp):
     msg["From"] = SENDER_EMAIL
     msg["To"] = RECEIVER_EMAIL
 
+    # Extract top 5 for Buy and Sell groups
+    buy_stocks = results_df[results_df["Setup"] == "Bull Div 🟢"]["Stock"].head(5).tolist()
+    sell_stocks = results_df[results_df["Setup"] == "Bear Div 🔴"]["Stock"].head(5).tolist()
+
+    buy_str = ", ".join(buy_stocks) if buy_stocks else "None"
+    sell_str = ", ".join(sell_stocks) if sell_stocks else "None"
+
     html_table = results_df.to_html(index=False, justify="center")
     body = (
         f"<h3>Daily Futures Divergence Scan at {timestamp}</h3>"
+        f"<hr>"
+        f"<h4>📋 BUY GROUP (Copy & Paste into Zone):</h4>"
+        f"<div style='background-color: #f4f4f4; padding: 10px; font-family: monospace; border: 1px solid #ccc;'>{buy_str}</div>"
+        f"<h4>📋 SELL GROUP (Copy & Paste into Zone):</h4>"
+        f"<div style='background-color: #f4f4f4; padding: 10px; font-family: monospace; border: 1px solid #ccc;'>{sell_str}</div>"
+        f"<hr>"
         f"<ul>"
         f"<li>Filters for Price & Stochastic (5,3,3) diverging on the Live Bar (0 vs -1), -1 Bar (-1 vs -2), or Both.</li>"
         f"<li>Reference ATR uses standard ATR(100).</li>"
         f"<li>Diverging bar bodies are strictly < 0.67 * ATR(100).</li>"
+        f"<li>Sorted by Ratio (ATR / Live Body) in descending order.</li>"
         f"</ul>"
         f"{html_table}"
     )
@@ -305,7 +325,6 @@ def run_definedge_daily_scan():
             last_date_in_db = df_daily.loc[df_daily.index[-1], 'Datetime'].date()
             
             if last_date_in_db < today_date_local:
-                # API is lagging. Fetch today's intraday tick data to build the Live Daily Candle.
                 today_start = datetime.combine(today_date_local, datetime.min.time())
                 try:
                     intra_gen = ic.historical_data(
@@ -328,7 +347,7 @@ def run_definedge_daily_scan():
                         }])
                         df_daily = pd.concat([df_daily, new_candle], ignore_index=True)
                 except Exception:
-                    pass # Fallback to whatever the API provided if this fails
+                    pass 
 
             if len(df_daily) < 110: continue 
 
@@ -358,7 +377,8 @@ def run_definedge_daily_scan():
                     "Live Div": match_data["Live Div"],
                     "-1 Div": match_data["Minus1 Div"],
                     "ATR(100)": match_data["Ref ATR"],
-                    "Max Body": match_data["Max Body"]
+                    "Live Body": match_data["Live Body"],
+                    "Ratio": match_data["Ratio"]
                 })
 
         except Exception as e:
@@ -373,11 +393,8 @@ def run_definedge_daily_scan():
         res_df["Setup"] = pd.Categorical(res_df["Setup"], categories=setup_order, ordered=True)
         res_df["Match On"] = pd.Categorical(res_df["Match On"], categories=match_order, ordered=True)
         
-        # Sort by Setup, Match On, and then by Max Body (ascending: smallest first)
-        res_df = res_df.sort_values(
-            by=["Setup", "Match On", "Max Body"], 
-            ascending=[True, True, True]
-        ).reset_index(drop=True)
+        # Sort by Setup, Match On, and Ratio descending
+        res_df = res_df.sort_values(by=["Setup", "Match On", "Ratio"], ascending=[True, True, False]).reset_index(drop=True)
         
         print("\n🎯 Matches found! Sending email notification...")
         print(tabulate(res_df, headers="keys", tablefmt="psql", showindex=False))
