@@ -373,7 +373,11 @@ def run_definedge_daily_scan():
         res_df["Setup"] = pd.Categorical(res_df["Setup"], categories=setup_order, ordered=True)
         res_df["Match On"] = pd.Categorical(res_df["Match On"], categories=match_order, ordered=True)
         
-        res_df = res_df.sort_values(by=["Setup", "Match On", "Stock"]).reset_index(drop=True)
+        # Sort by Setup, Match On, and then by Max Body (ascending: smallest first)
+        res_df = res_df.sort_values(
+            by=["Setup", "Match On", "Max Body"], 
+            ascending=[True, True, True]
+        ).reset_index(drop=True)
         
         print("\n🎯 Matches found! Sending email notification...")
         print(tabulate(res_df, headers="keys", tablefmt="psql", showindex=False))
