@@ -24,10 +24,9 @@ RECEIVER_EMAIL = "balanisuresh@gmail.com"
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 
 # Strategy Parameters
-STOCH_K_PERIOD = 5               
-STOCH_SMOOTH_K = 3               
-STOCH_D_PERIOD = 3               
-HIST_LOOKBACK_DAYS = 250        
+ATR_PERIOD = 100
+BODY_ATR_MULT = 0.67
+HIST_LOOKBACK_DAYS = 250
 
 fno_stocks = [
     '360ONE', 'ABB', 'ABCAPITAL', 'ADANIENSOL', 'ADANIENT', 'ADANIGREEN', 'ADANIPORTS', 
@@ -101,15 +100,6 @@ def parse_historical_to_df(hist_generator):
     df.sort_values("Datetime", inplace=True)
     return df.reset_index(drop=True)
 
-def calculate_stoch_533(df, k_period=5, smooth_k=3, d_period=3):
-    low_min = df["Low"].rolling(window=k_period).min()
-    high_max = df["High"].rolling(window=k_period).max()
-    denom = (high_max - low_min).replace(0, np.nan)
-    fast_k = 100.0 * ((df["Close"] - low_min) / denom)
-    slow_k = fast_k.rolling(window=smooth_k).mean() 
-    slow_d = slow_k.rolling(window=d_period).mean()
-    return slow_d
-
 def calculate_atr(df, period=100):
     high_low = df['High'] - df['Low']
     high_close = (df['High'] - df['Close'].shift()).abs()
@@ -118,108 +108,46 @@ def calculate_atr(df, period=100):
     return tr.rolling(window=period).mean()
 
 # ==========================================
-# 3. STRATEGY LOGIC EVALUATORS (DIVERGENCE)
+# 3. STRATEGY LOGIC EVALUATORS (3-BAR SETUP)
 # ==========================================
-def evaluate_bullish_divergence(df, current_idx):
-    curr_c = df.loc[current_idx, 'Close']
-    prev_c = df.loc[current_idx-1, 'Close']
-    m2_c = df.loc[current_idx-2, 'Close']
-    
-    curr_d = df.loc[current_idx, 'Stoch_D']
-    prev_d = df.loc[current_idx-1, 'Stoch_D']
-    m2_d = df.loc[current_idx-2, 'Stoch_D']
-    
-    live_div = (curr_c < prev_c) and (curr_d > prev_d)
-    m1_div = (prev_c < m2_c) and (prev_d > m2_d)
-    
-    if not (live_div or m1_div): 
-        return False
-        
-    if live_div and m1_div:
-        div_type = "Both"
-    elif live_div:
-        div_type = "Live Only"
-    else:
-        div_type = "-1 Only"
-
+def evaluate_3bar_setup(df, current_idx):
     ref_atr = df.loc[current_idx, 'ATR100']
-    if pd.isna(ref_atr): return False
-    
-    bars_to_check = []
-    if live_div: bars_to_check.append(current_idx)
-    if m1_div: bars_to_check.append(current_idx-1)
-    
+    if pd.isna(ref_atr): 
+        return False
+
+    c0 = df.loc[current_idx, 'Close']
+    c1 = df.loc[current_idx - 1, 'Close']
+    c2 = df.loc[current_idx - 2, 'Close']
+    c3 = df.loc[current_idx - 3, 'Close']
+
+    # Check for 3 consecutive down closes (Bullish Pullback) or 3 consecutive up closes (Bearish Rally)
+    three_down = (c0 < c1) and (c1 < c2) and (c2 < c3)
+    three_up = (c0 > c1) and (c1 > c2) and (c2 > c3)
+
+    if not (three_down or three_up):
+        return False
+
+    # Check that ALL THREE bars (0, -1, -2) have bodies strictly < 0.67 * ATR(100)
+    bars_to_check = [current_idx, current_idx - 1, current_idx - 2]
+    max_3b_body = 0.0
+
     for idx in bars_to_check:
         body = abs(df.loc[idx, 'Open'] - df.loc[idx, 'Close'])
-        if body >= (0.67 * ref_atr):
-            return False 
-            
-    # Always compute Live Bar Body and Ratio
+        max_3b_body = max(max_3b_body, body)
+        if body >= (BODY_ATR_MULT * ref_atr):
+            return False
+
     live_body = abs(df.loc[current_idx, 'Open'] - df.loc[current_idx, 'Close'])
-    ratio = round(ref_atr / live_body, 2) if live_body > 0 else 0.0
+    ratio = round(ref_atr / live_body, 2) if live_body > 0 else 999.99
 
-    live_out = "YES" if live_div else "NO"
-    m1_out = "YES" if m1_div else "NO"
-    
+    signal = "Bull Setup 🟢" if three_down else "Bear Setup 🔴"
+
     return {
-        "Signal": "Bull Div 🟢",
-        "Div Match": div_type,
+        "Signal": signal,
         "Ref ATR": round(ref_atr, 2),
+        "Max 3B Body": round(max_3b_body, 2),
         "Live Body": round(live_body, 2),
-        "Ratio": ratio,
-        "Live Div": live_out,
-        "Minus1 Div": m1_out
-    }
-
-def evaluate_bearish_divergence(df, current_idx):
-    curr_c = df.loc[current_idx, 'Close']
-    prev_c = df.loc[current_idx-1, 'Close']
-    m2_c = df.loc[current_idx-2, 'Close']
-    
-    curr_d = df.loc[current_idx, 'Stoch_D']
-    prev_d = df.loc[current_idx-1, 'Stoch_D']
-    m2_d = df.loc[current_idx-2, 'Stoch_D']
-    
-    live_div = (curr_c > prev_c) and (curr_d < prev_d)
-    m1_div = (prev_c > m2_c) and (prev_d < m2_d)
-    
-    if not (live_div or m1_div): 
-        return False
-        
-    if live_div and m1_div:
-        div_type = "Both"
-    elif live_div:
-        div_type = "Live Only"
-    else:
-        div_type = "-1 Only"
-    
-    ref_atr = df.loc[current_idx, 'ATR100']
-    if pd.isna(ref_atr): return False
-    
-    bars_to_check = []
-    if live_div: bars_to_check.append(current_idx)
-    if m1_div: bars_to_check.append(current_idx-1)
-    
-    for idx in bars_to_check:
-        body = abs(df.loc[idx, 'Open'] - df.loc[idx, 'Close'])
-        if body >= (0.67 * ref_atr):
-            return False 
-            
-    # Always compute Live Bar Body and Ratio
-    live_body = abs(df.loc[current_idx, 'Open'] - df.loc[current_idx, 'Close'])
-    ratio = round(ref_atr / live_body, 2) if live_body > 0 else 0.0
-
-    live_out = "YES" if live_div else "NO"
-    m1_out = "YES" if m1_div else "NO"
-    
-    return {
-        "Signal": "Bear Div 🔴",
-        "Div Match": div_type,
-        "Ref ATR": round(ref_atr, 2),
-        "Live Body": round(live_body, 2),
-        "Ratio": ratio,
-        "Live Div": live_out,
-        "Minus1 Div": m1_out
+        "Ratio": ratio
     }
 
 # ==========================================
@@ -228,31 +156,31 @@ def evaluate_bearish_divergence(df, current_idx):
 def send_email_alert(results_df, timestamp):
     if not APP_PASSWORD: return
     msg = EmailMessage()
-    msg["Subject"] = f"🎯 Daily Divergence Alert (5,3,3) - ({timestamp})"
+    msg["Subject"] = f"🎯 Daily 3-Bar Compression Alert - ({timestamp})"
     msg["From"] = SENDER_EMAIL
     msg["To"] = RECEIVER_EMAIL
 
     # Extract top 5 for Buy and Sell groups
-    buy_stocks = results_df[results_df["Setup"] == "Bull Div 🟢"]["Stock"].head(5).tolist()
-    sell_stocks = results_df[results_df["Setup"] == "Bear Div 🔴"]["Stock"].head(5).tolist()
+    buy_stocks = results_df[results_df["Setup"] == "Bull Setup 🟢"]["Stock"].head(5).tolist()
+    sell_stocks = results_df[results_df["Setup"] == "Bear Setup 🔴"]["Stock"].head(5).tolist()
 
     buy_str = ", ".join(buy_stocks) if buy_stocks else "None"
     sell_str = ", ".join(sell_stocks) if sell_stocks else "None"
 
     html_table = results_df.to_html(index=False, justify="center")
     body = (
-        f"<h3>Daily Futures Divergence Scan at {timestamp}</h3>"
+        f"<h3>Daily Futures 3-Bar Compression Scan at {timestamp}</h3>"
         f"<hr>"
-        f"<h4>📋 BUY GROUP (Copy & Paste into Zone):</h4>"
+        f"<h4>📋 BUY GROUP - Top 5 (Copy & Paste into Zone):</h4>"
         f"<div style='background-color: #f4f4f4; padding: 10px; font-family: monospace; border: 1px solid #ccc;'>{buy_str}</div>"
-        f"<h4>📋 SELL GROUP (Copy & Paste into Zone):</h4>"
+        f"<h4>📋 SELL GROUP - Top 5 (Copy & Paste into Zone):</h4>"
         f"<div style='background-color: #f4f4f4; padding: 10px; font-family: monospace; border: 1px solid #ccc;'>{sell_str}</div>"
         f"<hr>"
         f"<ul>"
-        f"<li>Filters for Price & Stochastic (5,3,3) diverging on the Live Bar (0 vs -1), -1 Bar (-1 vs -2), or Both.</li>"
-        f"<li>Reference ATR uses standard ATR(100).</li>"
-        f"<li>Diverging bar bodies are strictly < 0.67 * ATR(100).</li>"
-        f"<li>Sorted by Ratio (ATR / Live Body) in descending order.</li>"
+        f"<li><b>Bull Setup 🟢:</b> 3 Consecutive Lower Closes (Bars 0, -1, -2).</li>"
+        f"<li><b>Bear Setup 🔴:</b> 3 Consecutive Higher Closes (Bars 0, -1, -2).</li>"
+        f"<li>All 3 bar bodies are strictly &lt; 0.67 * ATR(100).</li>"
+        f"<li>Sorted by Ratio (ATR / Live Body) in descending order (Smallest Live Body on top).</li>"
         f"</ul>"
         f"{html_table}"
     )
@@ -272,7 +200,7 @@ def run_definedge_daily_scan():
     ist_tz = pytz.timezone("Asia/Kolkata")
     now_ist = datetime.now(ist_tz)
     now_ist_str = now_ist.strftime("%d-%b %H:%M:%S")
-    print(f"[{now_ist_str}] Logging into Definedge for Daily Divergence Scan...")
+    print(f"[{now_ist_str}] Logging into Definedge for Daily 3-Bar Scan...")
 
     conn = ConnectToIntegrate()
     try:
@@ -297,8 +225,9 @@ def run_definedge_daily_scan():
                     fut_by_stock.setdefault(base_sym, []).append((exp_date, sym))
 
     results = []
-    end_time = now_ist.replace(tzinfo=None)
-    start_time = end_time - timedelta(days=HIST_LOOKBACK_DAYS)
+    # 1-day buffer ensures Definedge returns today's completed EOD candle during evening runs
+    end_time_buffer = now_ist.replace(tzinfo=None) + timedelta(days=1)
+    start_time = now_ist.replace(tzinfo=None) - timedelta(days=HIST_LOOKBACK_DAYS)
 
     for idx, stock in enumerate(fno_stocks, 1):
         print(f"Scanning {stock} ({idx}/{len(fno_stocks)})...", flush=True)
@@ -316,12 +245,12 @@ def run_definedge_daily_scan():
                 trading_symbol=fut_tsym,
                 timeframe=conn.TIMEFRAME_TYPE_DAY,
                 start=start_time,
-                end=end_time,
+                end=end_time_buffer,
             )
             df_daily = parse_historical_to_df(hist_gen)
             if df_daily.empty: continue
 
-            # 2. HYBRID FETCH FIX: Ensure today's EOD candle is evaluated even if Definedge API delays it.
+            # 2. HYBRID FETCH FIX: Fallback to 1-min data if Daily EOD isn't updated yet
             last_date_in_db = df_daily.loc[df_daily.index[-1], 'Datetime'].date()
             
             if last_date_in_db < today_date_local:
@@ -330,9 +259,9 @@ def run_definedge_daily_scan():
                     intra_gen = ic.historical_data(
                         exchange=conn.EXCHANGE_TYPE_NFO,
                         trading_symbol=fut_tsym,
-                        timeframe=conn.TIMEFRAME_TYPE_MIN,  # Fetch 1-min data for today only
+                        timeframe=conn.TIMEFRAME_TYPE_MIN,
                         start=today_start,
-                        end=end_time,
+                        end=now_ist.replace(tzinfo=None),
                     )
                     df_intra = parse_historical_to_df(intra_gen)
                     
@@ -347,60 +276,49 @@ def run_definedge_daily_scan():
                         }])
                         df_daily = pd.concat([df_daily, new_candle], ignore_index=True)
                 except Exception:
-                    pass 
+                    pass
 
-            if len(df_daily) < 110: continue 
+            if len(df_daily) < 110: continue
 
-            df_daily["Stoch_D"] = calculate_stoch_533(df_daily, STOCH_K_PERIOD, STOCH_SMOOTH_K, STOCH_D_PERIOD)
-            df_daily["ATR100"] = calculate_atr(df_daily, 100)
-
+            df_daily["ATR100"] = calculate_atr(df_daily, ATR_PERIOD)
             current_idx = len(df_daily) - 1
             
-            if current_idx < 2: continue
-            if pd.isna(df_daily.loc[current_idx, 'Stoch_D']) or pd.isna(df_daily.loc[current_idx-2, 'Stoch_D']): continue
+            if current_idx < 3: continue
             if pd.isna(df_daily.loc[current_idx, 'ATR100']): continue
             
-            bull_data = evaluate_bullish_divergence(df_daily, current_idx)
-            bear_data = evaluate_bearish_divergence(df_daily, current_idx)
-            
-            match_data = bull_data if bull_data else bear_data
+            match_data = evaluate_3bar_setup(df_daily, current_idx)
             
             if match_data:
                 time_str = df_daily.loc[current_idx, 'Datetime'].strftime("%d-%b-%Y")
-                print(f"  ✅ MATCH: {fut_tsym} | {match_data['Signal']} | Match On: {match_data['Div Match']}")
+                print(f"  ✅ MATCH: {fut_tsym} | {match_data['Signal']} | Ratio: {match_data['Ratio']}")
                 
                 results.append({
                     "Stock": stock,
                     "Setup": match_data["Signal"],
-                    "Match On": match_data["Div Match"],
                     "Bar Date": time_str,
-                    "Live Div": match_data["Live Div"],
-                    "-1 Div": match_data["Minus1 Div"],
                     "ATR(100)": match_data["Ref ATR"],
+                    "Max 3B Body": match_data["Max 3B Body"],
                     "Live Body": match_data["Live Body"],
                     "Ratio": match_data["Ratio"]
                 })
 
-        except Exception as e:
+        except Exception:
             continue
 
     if results:
         res_df = pd.DataFrame(results)
         
-        setup_order = ["Bull Div 🟢", "Bear Div 🔴"]
-        match_order = ["Both", "Live Only", "-1 Only"]
-        
+        setup_order = ["Bull Setup 🟢", "Bear Setup 🔴"]
         res_df["Setup"] = pd.Categorical(res_df["Setup"], categories=setup_order, ordered=True)
-        res_df["Match On"] = pd.Categorical(res_df["Match On"], categories=match_order, ordered=True)
         
-        # Sort by Setup, Match On, and Ratio descending
-        res_df = res_df.sort_values(by=["Setup", "Match On", "Ratio"], ascending=[True, True, False]).reset_index(drop=True)
+        # Sort by Setup (Bull then Bear), then Ratio descending (Smallest Live Body at the top)
+        res_df = res_df.sort_values(by=["Setup", "Ratio"], ascending=[True, False]).reset_index(drop=True)
         
         print("\n🎯 Matches found! Sending email notification...")
         print(tabulate(res_df, headers="keys", tablefmt="psql", showindex=False))
         send_email_alert(res_df, now_ist_str)
     else:
-        print("\nNo setups matched the Daily Divergence strategy.")
+        print("\nNo setups matched the Daily 3-Bar Compression strategy.")
 
 if __name__ == "__main__":
     run_definedge_daily_scan()
