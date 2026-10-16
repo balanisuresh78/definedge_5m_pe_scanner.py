@@ -1,4 +1,5 @@
 import os
+import time
 import smtplib
 from email.message import EmailMessage
 from datetime import datetime, timedelta, time as dt_time
@@ -28,6 +29,13 @@ TIMEFRAME_MINS = 129
 ATR_PERIOD = 100
 BODY_ATR_MULT = 0.67
 HIST_LOOKBACK_DAYS = 75  # ~50 trading days = ~150 bars of 129-min candles
+
+# Exact IST Bar-Close Scan Targets (15 seconds after each bar closes)
+SCAN_TARGETS_IST = [
+    dt_time(11, 24, 15),  # Candle 1 Close (09:15 - 11:24)
+    dt_time(13, 33, 15),  # Candle 2 Close (11:24 - 13:33)
+    dt_time(15, 40, 15),  # Candle 3 Close (13:33 - 15:40)
+]
 
 fno_stocks = [
     '360ONE', 'ABB', 'ABCAPITAL', 'ADANIENSOL', 'ADANIENT', 'ADANIGREEN', 'ADANIPORTS', 
@@ -65,7 +73,8 @@ fno_stocks = [
 # 2. HELPER & CALCULATION FUNCTIONS
 # ==========================================
 def parse_expiry_date(exp_str):
-    if not exp_str: return None
+    if not exp_str:
+        return None
     exp_str = str(exp_str).strip()
     for fmt in ("%d%m%Y", "%Y-%m-%d", "%d-%b-%Y", "%d%b%Y"):
         try:
@@ -89,7 +98,8 @@ def parse_historical_to_df(hist_generator):
             if len(parts) >= 6:
                 rows.append([parts[0], float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4]), float(parts[5])])
 
-    if not rows: return pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
     df = pd.DataFrame(rows, columns=["Datetime", "Open", "High", "Low", "Close", "Volume"])
     for col in ["Open", "High", "Low", "Close", "Volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -101,26 +111,25 @@ def parse_historical_to_df(hist_generator):
     df.sort_values("Datetime", inplace=True)
     return df.reset_index(drop=True)
 
-def resample_to_129m(df_1m, tf_mins=129):
+def resample_to_129m(df_1m, now_ist, tf_mins=129):
     """
-    Builds exact 129-minute candles anchored to 09:15 AM IST each trading day:
-    Candle 1: 09:15 - 11:23
-    Candle 2: 11:24 - 13:32
-    Candle 3: 13:33 - 15:30
+    Builds exact 129-minute candles anchored to 09:15 AM IST:
+    Bucket 0: 09:15 - 11:23 (closes at 11:24)
+    Bucket 1: 11:24 - 13:32 (closes at 13:33)
+    Bucket 2: 13:33 - 15:40 (closes at 15:40)
+    Automatically drops any currently forming (incomplete) bar for today.
     """
     if df_1m.empty:
         return pd.DataFrame()
 
-    # Filter to regular market session (09:15 to 15:30)
     times = df_1m["Datetime"].dt.time
-    df = df_1m[(times >= dt_time(9, 15)) & (times <= dt_time(15, 30))].copy()
+    df = df_1m[(times >= dt_time(9, 15)) & (times <= dt_time(15, 40))].copy()
     if df.empty:
         return pd.DataFrame()
 
-    # Calculate minutes elapsed since 09:15 AM on each date
     day_open = df["Datetime"].dt.normalize() + pd.Timedelta(hours=9, minutes=15)
     mins_from_open = ((df["Datetime"] - day_open).dt.total_seconds() // 60).astype(int)
-    
+
     df["TradeDate"] = df["Datetime"].dt.date
     df["Bucket"] = (mins_from_open // tf_mins).clip(lower=0, upper=2)
 
@@ -132,6 +141,24 @@ def resample_to_129m(df_1m, tf_mins=129):
         Close=("Close", "last"),
         Volume=("Volume", "sum")
     )
+
+    # Drop any bar on today's date that has not finished closing yet
+    today_date = now_ist.date()
+    curr_time = now_ist.time()
+
+    if curr_time < dt_time(11, 24):
+        max_completed_bucket = -1
+    elif curr_time < dt_time(13, 33):
+        max_completed_bucket = 0
+    elif curr_time < dt_time(15, 30):
+        max_completed_bucket = 1
+    else:
+        max_completed_bucket = 2
+
+    df_tf = df_tf[
+        (df_tf["TradeDate"] < today_date) |
+        ((df_tf["TradeDate"] == today_date) & (df_tf["Bucket"] <= max_completed_bucket))
+    ].copy()
 
     df_tf.sort_values("Datetime", inplace=True)
     return df_tf.drop(columns=["TradeDate", "Bucket"]).reset_index(drop=True)
@@ -148,7 +175,7 @@ def calculate_atr(df, period=100):
 # ==========================================
 def evaluate_4bar_setup(df, current_idx):
     ref_atr = df.loc[current_idx, 'ATR100']
-    if pd.isna(ref_atr): 
+    if pd.isna(ref_atr):
         return False
 
     c0 = df.loc[current_idx, 'Close']
@@ -157,7 +184,7 @@ def evaluate_4bar_setup(df, current_idx):
     c3 = df.loc[current_idx - 3, 'Close']
     c4 = df.loc[current_idx - 4, 'Close']
 
-    # Check for 4 consecutive lower closes (Bull Setup) or 4 consecutive higher closes (Bear Setup)
+    # 4 consecutive lower closes (Bull Setup) or 4 consecutive higher closes (Bear Setup)
     four_down = (c0 < c1) and (c1 < c2) and (c2 < c3) and (c3 < c4)
     four_up = (c0 > c1) and (c1 > c2) and (c2 > c3) and (c3 > c4)
 
@@ -188,9 +215,9 @@ def evaluate_4bar_setup(df, current_idx):
     }
 
 # ==========================================
-# 4. NOTIFICATION & MAIN ENGINE
+# 4. NOTIFICATION & SCANNER ENGINE
 # ==========================================
-def send_email_alert(results_df, timestamp):
+def send_email_alert(results_df, timestamp, bar_label):
     if not APP_PASSWORD:
         print("❌ ERROR: APP_PASSWORD environment variable is empty! Check GitHub Secrets.")
         return
@@ -200,15 +227,16 @@ def send_email_alert(results_df, timestamp):
     msg["To"] = RECEIVER_EMAIL
 
     if results_df.empty:
-        msg["Subject"] = f"⚪ Live 129m 4-Bar Scan: 0 Matches - ({timestamp})"
+        msg["Subject"] = f"⚪ 129m 4-Bar Scan ({bar_label}): 0 Matches - ({timestamp})"
         body = (
-            f"<h3>Live Futures 129-Min (4-Bar) Scan at {timestamp}</h3>"
+            f"<h3>Futures 129-Min (4-Bar) Scan at {timestamp}</h3>"
+            f"<p>Evaluated Bar: <b>{bar_label}</b></p>"
             f"<p>Scan completed across all NFO stocks, but <b>0 setups</b> matched the 4-Bar Compression criteria.</p>"
         )
-        msg.set_content("Scan completed. 0 setups matched.")
+        msg.set_content(f"Scan completed for {bar_label}. 0 setups matched.")
         msg.add_alternative(body, subtype="html")
     else:
-        msg["Subject"] = f"🎯 Live 129m 4-Bar Compression Alert ({len(results_df)}) - ({timestamp})"
+        msg["Subject"] = f"🎯 129m 4-Bar Alert [{bar_label}] ({len(results_df)} Matches) - ({timestamp})"
 
         buy_stocks = results_df[results_df["Setup"] == "Bull Setup 🟢"]["Stock"].head(5).tolist()
         sell_stocks = results_df[results_df["Setup"] == "Bear Setup 🔴"]["Stock"].head(5).tolist()
@@ -218,7 +246,8 @@ def send_email_alert(results_df, timestamp):
 
         html_table = results_df.to_html(index=False, justify="center")
         body = (
-            f"<h3>Live Futures 129-Min (4-Bar) Compression Scan at {timestamp}</h3>"
+            f"<h3>Futures 129-Min (4-Bar) Compression Scan at {timestamp}</h3>"
+            f"<p><b>Completed Bar Evaluated:</b> {bar_label}</p>"
             f"<hr>"
             f"<h4>📋 BUY GROUP - Top 5 (Copy & Paste into Zone):</h4>"
             f"<div style='background-color: #f4f4f4; padding: 10px; font-family: monospace; border: 1px solid #ccc;'>{buy_str}</div>"
@@ -226,7 +255,7 @@ def send_email_alert(results_df, timestamp):
             f"<div style='background-color: #f4f4f4; padding: 10px; font-family: monospace; border: 1px solid #ccc;'>{sell_str}</div>"
             f"<hr>"
             f"<ul>"
-            f"<li><b>Timeframe:</b> 129-Minute Candles (09:15, 11:24, 13:33 IST).</li>"
+            f"<li><b>Timeframe:</b> 129-Minute Candles (09:15, 11:24, 13:33 IST - Close 15:40).</li>"
             f"<li><b>Bull Setup 🟢:</b> 4 Consecutive Lower Closes (Bars 0, -1, -2, -3).</li>"
             f"<li><b>Bear Setup 🔴:</b> 4 Consecutive Higher Closes (Bars 0, -1, -2, -3).</li>"
             f"<li>All 4 bar bodies are strictly &lt; 0.67 * ATR(100).</li>"
@@ -242,25 +271,25 @@ def send_email_alert(results_df, timestamp):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
             smtp.login(SENDER_EMAIL, APP_PASSWORD.replace(" ", ""))
             smtp.send_message(msg)
-        print("✅ Alert email successfully sent!")
+        print(f"✅ Alert email successfully sent for bar [{bar_label}]!")
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
 
-def run_definedge_129m_scan():
+def execute_single_scan():
     ist_tz = pytz.timezone("Asia/Kolkata")
     now_ist = datetime.now(ist_tz)
     now_ist_str = now_ist.strftime("%d-%b %H:%M:%S")
-    print(f"[{now_ist_str}] Logging into Definedge for Live 129-Min (4-Bar) Scan...")
+    print(f"\n[{now_ist_str}] Logging into Definedge for 129-Min (4-Bar) Scan...", flush=True)
 
     conn = ConnectToIntegrate()
     try:
         current_totp = pyotp.TOTP(TOTP_SECRET.replace(" ", "")).now()
         conn.login(api_token=API_TOKEN.strip(), api_secret=API_SECRET.strip(), totp=current_totp)
         ic = IntegrateData(conn)
-        print("✅ Logged in! Indexing NFO Stock Futures...")
+        print("✅ Logged in! Indexing NFO Stock Futures...", flush=True)
     except Exception as auth_err:
-        print(f"❌ Definedge Login Failed: {auth_err}")
-        return
+        print(f"❌ Definedge Login Failed: {auth_err}", flush=True)
+        return None
 
     today_date_local = now_ist.date()
     stock_set = set(fno_stocks)
@@ -277,10 +306,12 @@ def run_definedge_129m_scan():
     results = []
     end_time = now_ist.replace(tzinfo=None)
     start_time = end_time - timedelta(days=HIST_LOOKBACK_DAYS)
+    latest_bar_str = "Latest Completed Bar"
 
     for idx, stock in enumerate(fno_stocks, 1):
         print(f"Scanning {stock} ({idx}/{len(fno_stocks)})...", flush=True)
-        if stock not in fut_by_stock: continue
+        if stock not in fut_by_stock:
+            continue
 
         all_entries = fut_by_stock[stock]
         nearest_expiry = min(exp for exp, _ in all_entries)
@@ -288,7 +319,6 @@ def run_definedge_129m_scan():
         fut_tsym = fut_contract["trading_symbol"]
 
         try:
-            # Fetch 1-minute intraday data and build 129-minute candles
             intra_gen = ic.historical_data(
                 exchange=conn.EXCHANGE_TYPE_NFO,
                 trading_symbol=fut_tsym,
@@ -297,27 +327,33 @@ def run_definedge_129m_scan():
                 end=end_time,
             )
             df_1m = parse_historical_to_df(intra_gen)
-            if df_1m.empty: continue
+            if df_1m.empty:
+                continue
 
-            df_129m = resample_to_129m(df_1m, TIMEFRAME_MINS)
-            if len(df_129m) < (ATR_PERIOD + 5): continue
+            df_129m = resample_to_129m(df_1m, now_ist, TIMEFRAME_MINS)
+            if len(df_129m) < (ATR_PERIOD + 5):
+                continue
 
             df_129m["ATR100"] = calculate_atr(df_129m, ATR_PERIOD)
             current_idx = len(df_129m) - 1
 
-            if current_idx < 4: continue
-            if pd.isna(df_129m.loc[current_idx, 'ATR100']): continue
+            if current_idx < 4:
+                continue
+            if pd.isna(df_129m.loc[current_idx, 'ATR100']):
+                continue
+
+            bar_time_str = df_129m.loc[current_idx, 'Datetime'].strftime("%d-%b %H:%M")
+            latest_bar_str = bar_time_str
 
             match_data = evaluate_4bar_setup(df_129m, current_idx)
 
             if match_data:
-                bar_time_str = df_129m.loc[current_idx, 'Datetime'].strftime("%d-%b %H:%M")
-                print(f"  ✅ MATCH: {fut_tsym} | {match_data['Signal']} | Bar: {bar_time_str} | Ratio: {match_data['Ratio']}")
+                print(f"  ✅ MATCH: {fut_tsym} | {match_data['Signal']} | Bar: {bar_time_str} | Ratio: {match_data['Ratio']}", flush=True)
 
                 results.append({
                     "Stock": stock,
                     "Setup": match_data["Signal"],
-                    "Live Bar": bar_time_str,
+                    "Bar Open": bar_time_str,
                     "ATR(100)": match_data["Ref ATR"],
                     "Max 4B Body": match_data["Max 4B Body"],
                     "Live Body": match_data["Live Body"],
@@ -329,19 +365,55 @@ def run_definedge_129m_scan():
 
     if results:
         res_df = pd.DataFrame(results)
-
         setup_order = ["Bull Setup 🟢", "Bear Setup 🔴"]
         res_df["Setup"] = pd.Categorical(res_df["Setup"], categories=setup_order, ordered=True)
-
-        # Sort by Setup (Bull then Bear), then Ratio descending (Smallest Live Body at the top)
         res_df = res_df.sort_values(by=["Setup", "Ratio"], ascending=[True, False]).reset_index(drop=True)
 
-        print("\n🎯 Matches found! Sending email notification...")
-        print(tabulate(res_df, headers="keys", tablefmt="psql", showindex=False))
-        send_email_alert(res_df, now_ist_str)
+        print(f"\n🎯 Matches found for [{latest_bar_str}]! Sending email notification...", flush=True)
+        print(tabulate(res_df, headers="keys", tablefmt="psql", showindex=False), flush=True)
+        send_email_alert(res_df, now_ist_str, latest_bar_str)
     else:
-        print("\nNo setups matched the 129-Min 4-Bar Compression strategy.")
-        send_email_alert(pd.DataFrame(), now_ist_str)
+        print(f"\nNo setups matched for [{latest_bar_str}]. Sending 0-match confirmation email...", flush=True)
+        send_email_alert(pd.DataFrame(), now_ist_str, latest_bar_str)
+
+    return latest_bar_str
+
+def run_definedge_129m_scheduler():
+    ist_tz = pytz.timezone("Asia/Kolkata")
+    now_ist = datetime.now(ist_tz)
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "manual")
+
+    # 1. Always run an immediate scan if triggered manually OR if a bar has already closed today
+    if event_name == "workflow_dispatch" or now_ist.time() >= dt_time(11, 24):
+        print(f"Trigger: {event_name} at {now_ist.strftime('%H:%M:%S')} IST -> Running immediate scan...", flush=True)
+        execute_single_scan()
+
+    # 2. If it's a weekday during market hours, stay awake for any upcoming 129m bar closes within 4.5 hours
+    while True:
+        now_ist = datetime.now(ist_tz)
+        if now_ist.weekday() >= 5 or now_ist.time() >= dt_time(15, 41):
+            print("Market session finished for today. Exiting cleanly.", flush=True)
+            break
+
+        upcoming_targets = [
+            datetime.combine(now_ist.date(), t, tzinfo=ist_tz)
+            for t in SCAN_TARGETS_IST
+            if t > now_ist.time()
+        ]
+        if not upcoming_targets:
+            break
+
+        next_target = upcoming_targets[0]
+        wait_seconds = (next_target - now_ist).total_seconds()
+
+        # Only wait if the next bar close is within 4.5 hours (prevents GitHub 6h job timeout)
+        if wait_seconds > 16200:
+            print(f"Next target {next_target.strftime('%H:%M:%S')} is >4.5 hours away. Exiting until next trigger.", flush=True)
+            break
+
+        print(f"⏳ Waiting {int(wait_seconds // 60)}m {int(wait_seconds % 60)}s until next 129m bar close at {next_target.strftime('%H:%M:%S')} IST...", flush=True)
+        time.sleep(max(1, wait_seconds))
+        execute_single_scan()
 
 if __name__ == "__main__":
-    run_definedge_129m_scan()
+    run_definedge_129m_scheduler()
