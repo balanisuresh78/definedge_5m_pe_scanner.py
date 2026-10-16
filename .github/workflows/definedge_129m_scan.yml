@@ -1,41 +1,48 @@
-def resample_to_129m(df_1m, tf_mins=129):
-    """
-    Builds exact 129-minute candles anchored to 09:15 AM IST each trading day:
-    Candle 1: 09:15 - 11:23 (closes 11:24)
-    Candle 2: 11:24 - 13:32 (closes 13:33)
-    Candle 3: 13:33 - 15:40 (closes 15:40)
-    """
-    if df_1m.empty:
-        return pd.DataFrame()
+name: Definedge 129m FUT Scanner
 
-    # Filter to F&O market session (09:15 to 15:40)
-    times = df_1m["Datetime"].dt.time
-    df = df_1m[(times >= dt_time(9, 15)) & (times <= dt_time(15, 40))].copy()
-    if df.empty:
-        return pd.DataFrame()
+on:
+  schedule:
+    # Pre-shifted early trigger (01:30 UTC) to offset GitHub's ~4.5h cron backlog so the job wakes up before 11:24 AM IST
+    - cron: '30 1 * * 1-5'
+    # Candle 1 Close (09:15-11:24) -> 11:25 IST / 05:55 UTC
+    - cron: '55 5 * * 1-5'
+    # Candle 2 Close (11:24-13:33) -> 13:34 IST / 08:04 UTC
+    - cron: '4 8 * * 1-5'
+    # Candle 3 Close (13:33-15:40) -> 15:41 IST / 10:11 UTC
+    - cron: '11 10 * * 1-5'
+  workflow_dispatch:
 
-    # Calculate minutes elapsed since 09:15 AM on each date
-    day_open = df["Datetime"].dt.normalize() + pd.Timedelta(hours=9, minutes=15)
-    mins_from_open = ((df["Datetime"] - day_open).dt.total_seconds() // 60).astype(int)
-    
-    df["TradeDate"] = df["Datetime"].dt.date
-    df["Bucket"] = (mins_from_open // tf_mins).clip(lower=0, upper=2)
+# Prevents duplicate runs from overlapping if a job is already waiting for the next bar close
+concurrency:
+  group: definedge-129m-intraday-scanner
+  cancel-in-progress: false
 
-    df_tf = df.groupby(["TradeDate", "Bucket"], as_index=False).agg(
-        Datetime=("Datetime", "first"),
-        Open=("Open", "first"),
-        High=("High", "max"),
-        Low=("Low", "min"),
-        Close=("Close", "last"),
-        Volume=("Volume", "sum"),
-        BarCount=("Close", "count")
-    )
+jobs:
+  run-129m-fut-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    df_tf.sort_values("Datetime", inplace=True)
-    df_tf.reset_index(drop=True, inplace=True)
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    # Drop the newly opened stub bar (< 20 mins old) so we scan the just-completed 129m bar
-    if not df_tf.empty and df_tf.iloc[-1]["BarCount"] < 20:
-        df_tf = df_tf.iloc[:-1].reset_index(drop=True)
+      - name: Install Dependencies
+        run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
 
-    return df_tf.drop(columns=["TradeDate", "Bucket", "BarCount"])
+      - name: Run 129m Definedge Scanner
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ -f "definedge_129m_fut_scanner.py" ]; then
+            python definedge_129m_fut_scanner.py
+          elif [ -f "definedge_129m_scanner.py" ]; then
+            python definedge_129m_scanner.py
+          else
+            echo "Error: Neither definedge_129m_fut_scanner.py nor definedge_129m_scanner.py was found!"
+            exit 1
+          fi
