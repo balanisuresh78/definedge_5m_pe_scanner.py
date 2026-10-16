@@ -1,27 +1,41 @@
-name: Definedge 129m 4-Bar Scanner
+def resample_to_129m(df_1m, tf_mins=129):
+    """
+    Builds exact 129-minute candles anchored to 09:15 AM IST each trading day:
+    Candle 1: 09:15 - 11:23 (closes 11:24)
+    Candle 2: 11:24 - 13:32 (closes 13:33)
+    Candle 3: 13:33 - 15:40 (closes 15:40)
+    """
+    if df_1m.empty:
+        return pd.DataFrame()
 
-on:
-  schedule:
-    # Runs at 15:41 IST (10:11 UTC) Monday-Friday, right after the 3:40 PM F&O close
-    - cron: '11 10 * * 1-5'
-  workflow_dispatch:
+    # Filter to F&O market session (09:15 to 15:40)
+    times = df_1m["Datetime"].dt.time
+    df = df_1m[(times >= dt_time(9, 15)) & (times <= dt_time(15, 40))].copy()
+    if df.empty:
+        return pd.DataFrame()
 
-jobs:
-  run-129m-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+    # Calculate minutes elapsed since 09:15 AM on each date
+    day_open = df["Datetime"].dt.normalize() + pd.Timedelta(hours=9, minutes=15)
+    mins_from_open = ((df["Datetime"] - day_open).dt.total_seconds() // 60).astype(int)
+    
+    df["TradeDate"] = df["Datetime"].dt.date
+    df["Bucket"] = (mins_from_open // tf_mins).clip(lower=0, upper=2)
 
-      - name: Set Up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    df_tf = df.groupby(["TradeDate", "Bucket"], as_index=False).agg(
+        Datetime=("Datetime", "first"),
+        Open=("Open", "first"),
+        High=("High", "max"),
+        Low=("Low", "min"),
+        Close=("Close", "last"),
+        Volume=("Volume", "sum"),
+        BarCount=("Close", "count")
+    )
 
-      - name: Install Dependencies
-        run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
+    df_tf.sort_values("Datetime", inplace=True)
+    df_tf.reset_index(drop=True, inplace=True)
 
-      - name: Run 129-Min Scanner
-        env:
-          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
-        run: python definedge_129m_scanner.py
+    # Drop the newly opened stub bar (< 20 mins old) so we scan the just-completed 129m bar
+    if not df_tf.empty and df_tf.iloc[-1]["BarCount"] < 20:
+        df_tf = df_tf.iloc[:-1].reset_index(drop=True)
+
+    return df_tf.drop(columns=["TradeDate", "Bucket", "BarCount"])
