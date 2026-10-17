@@ -258,15 +258,15 @@ def send_email_alert(matches, evaluated_bar_str):
                 m["stock"],
                 m["signal"],
                 m["bar_time"],
-                m["close"],
                 m["atr"],
                 m["max_body"],
-                m["body_atr_ratio"],
-                f"{m['roc_pct']}%"
+                m["close"],
+                m["body_atr_ratio"]
             ]
             for m in (buy_matches + sell_matches)
         ]
-        headers = ["Stock", "Setup", "Bar Start", "Close", "ATR(100)", "Max5Body", "Body/ATR", "5-Bar ROC%"]
+        # Exact requested column headers
+        headers = ["Stock", "Setup", "Bar Date", "ATR(100)", "Max 5B Body", "Live", "BodyRatio"]
         body_lines.append(tabulate(table_rows, headers=headers, tablefmt="grid"))
     else:
         body_lines.append("No stocks matched the 77m 5-bar compression criteria on this bar.")
