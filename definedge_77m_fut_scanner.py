@@ -1,52 +1,324 @@
-name: Definedge 77m FUT Scanner
+import os
+import sys
+import time
+import zipfile
+import io
+import smtplib
+import pyotp
+import requests
+import pytz
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta, time as dtime
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from tabulate import tabulate
+from integrate import ConnectToIntegrate, IntegrateData
 
-on:
-  schedule:
-    # Pre-shifted early trigger (01:30 UTC / 07:00 IST) to offset GitHub's cron backlog so the background script wakes up early
-    - cron: '30 1 * * 1-5'
-    # Bar 1 Close (09:15 - 10:32) -> Runs at 10:33 IST / 05:03 UTC
-    - cron: '3 5 * * 1-5'
-    # Bar 2 Close (10:32 - 11:49) -> Runs at 11:50 IST / 06:20 UTC
-    - cron: '20 6 * * 1-5'
-    # Bar 3 Close (11:49 - 13:06) -> Runs at 13:07 IST / 07:37 UTC
-    - cron: '37 7 * * 1-5'
-    # Bar 4 Close (13:06 - 14:23) -> Runs at 14:24 IST / 08:54 UTC
-    - cron: '54 8 * * 1-5'
-    # Bar 5 Close (14:23 - 15:40) -> Runs at 15:41 IST / 10:11 UTC
-    - cron: '11 10 * * 1-5'
-  workflow_dispatch:
+# ==============================================================================
+# 1. CREDENTIALS & CONFIGURATION
+# ==============================================================================
+API_TOKEN = os.environ.get("DEFINEDGE_API_TOKEN", "YOUR_API_TOKEN")
+API_SECRET = os.environ.get("DEFINEDGE_API_SECRET", "YOUR_API_SECRET")
+TOTP_SECRET = os.environ.get("DEFINEDGE_TOTP_SECRET", "YOUR_TOTP_SECRET")
 
-# Prevents duplicate runs from overlapping if a background timer is active
-concurrency:
-  group: definedge-77m-intraday-scanner
-  cancel-in-progress: false
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "your_email@gmail.com")
+RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "your_email@gmail.com")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "YOUR_GMAIL_APP_PASSWORD")
 
-jobs:
-  run-77m-fut-scan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+IST = pytz.timezone("Asia/Kolkata")
 
-      - name: Set Up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+# 77-Minute Strategy Parameters (385-min session 09:15-15:40 = 5 exact bars/day)
+TIMEFRAME_MIN = 77
+ATR_PERIOD = 100
+BODY_ATR_MULT = 0.67
+CONSEC_BARS = 4
+LOOKBACK_DAYS = 75
 
-      - name: Install Dependencies
-        run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
+# Keep False so this workflow finishes in ~3 mins and frees the GitHub runner
+# for your 30m and Daily scanners!
+HOLD_RUNNER_LOOP = False
 
-      - name: Run 77m Definedge Scanner
-        env:
-          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-        run: |
-          if [ -f "definedge_77m_fut_scanner.py" ]; then
-            python definedge_77m_fut_scanner.py
-          elif [ -f "definedge_129m_fut_scanner.py" ]; then
-            python definedge_129m_fut_scanner.py
-          else
-            echo "Error: Scanner python file not found!"
-            exit 1
-          fi
+# ==============================================================================
+# 2. DEFINEDGE LOGIN & MASTER SYMBOL FETCH
+# ==============================================================================
+def login_definedge():
+    conn = ConnectToIntegrate()
+    totp = pyotp.TOTP(TOTP_SECRET).now()
+    conn.login(api_token=API_TOKEN, api_secret=API_SECRET, totp=totp)
+    return IntegrateData(conn)
+
+def get_current_month_nfo_futures():
+    url = "https://app.definedgesecurities.com/public/allmaster.zip"
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+        csv_name = z.namelist()[0]
+        with z.open(csv_name) as f:
+            df = pd.read_csv(f, header=None, low_memory=False)
+
+    # Filter NFO Stock Futures (FUTSTK)
+    nfo = df[(df[0] == "NFO") & (df[4] == "FUTSTK")].copy()
+    nfo["expiry"] = pd.to_datetime(nfo[8], format="%d%m%Y", errors="coerce")
+    today = pd.Timestamp(datetime.now(IST).date())
+    nfo = nfo[nfo["expiry"] >= today]
+
+    # Pick nearest expiry per underlying symbol
+    nfo = nfo.sort_values("expiry").groupby(2, as_index=False).first()
+    nfo = nfo.sort_values(2).reset_index(drop=True)
+
+    futures_list = []
+    for _, row in nfo.iterrows():
+        futures_list.append({
+            "underlying": str(row[2]).strip(),
+            "trading_symbol": str(row[3]).strip(),
+            "token": str(row[1]).strip()
+        })
+    return futures_list
+
+# ==============================================================================
+# 3. 77-MINUTE RESAMPLING & 4-BAR COMPRESSION LOGIC
+# ==============================================================================
+# Exact 77m bar start times across the 09:15 - 15:40 NFO session:
+# Bar 1: 09:15 - 10:32
+# Bar 2: 10:32 - 11:49
+# Bar 3: 11:49 - 13:06
+# Bar 4: 13:06 - 14:23
+# Bar 5: 14:23 - 15:40
+BAR_CLOSURE_TIMES = [
+    (dtime(9, 15), dtime(10, 32)),
+    (dtime(10, 32), dtime(11, 49)),
+    (dtime(11, 49), dtime(13, 6)),
+    (dtime(13, 6), dtime(14, 23)),
+    (dtime(14, 23), dtime(15, 40)),
+]
+
+def get_latest_completed_bar_start(now_ist):
+    """Returns the start time of the most recently completed 77m bar."""
+    current_t = now_ist.time()
+    completed_start = None
+    for start_t, end_t in BAR_CLOSURE_TIMES:
+        if current_t >= end_t:
+            completed_start = start_t
+    return completed_start
+
+def resample_to_77m(df_1m, now_ist):
+    """Resamples 1-minute NFO data into exact 77-minute session bars (09:15 origin)."""
+    df = df_1m.copy()
+    df = df.between_time("09:15", "15:40")
+    if df.empty:
+        return pd.DataFrame()
+
+    # Group by trading date and resample anchored at 09:15
+    resampled_chunks = []
+    for trade_date, group in df.groupby(df.index.date):
+        bars = group.resample(
+            f"{TIMEFRAME_MIN}min",
+            origin="start_day",
+            offset="9h15min",
+            label="left",
+            closed="left"
+        ).agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }).dropna(subset=["open", "close"])
+
+        # Keep only the 5 valid session bars starting at or before 14:23
+        bars = bars[bars.index.time <= dtime(14, 23)]
+        resampled_chunks.append(bars)
+
+    if not resampled_chunks:
+        return pd.DataFrame()
+
+    df_77m = pd.concat(resampled_chunks).sort_index()
+
+    # Drop any currently forming (incomplete) bar from today
+    today_date = now_ist.date()
+    latest_completed_start = get_latest_completed_bar_start(now_ist)
+
+    if latest_completed_start is None:
+        # Before 10:32 AM today -> only evaluate up to previous trading day
+        df_77m = df_77m[df_77m.index.date < today_date]
+    else:
+        cutoff_dt = IST.localize(datetime.combine(today_date, latest_completed_start))
+        df_77m = df_77m[df_77m.index <= cutoff_dt]
+
+    return df_77m
+
+def calculate_wilder_atr(df, period=100):
+    high = df["high"]
+    low = df["low"]
+    prev_close = df["close"].shift(1)
+
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+
+    # Wilder's RMA (alpha = 1 / period)
+    atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    return atr
+
+def evaluate_4bar_compression(df_77m):
+    if len(df_77m) < ATR_PERIOD + CONSEC_BARS + 2:
+        return None
+
+    df = df_77m.copy()
+    df["body"] = (df["close"] - df["open"]).abs()
+    df["atr"] = calculate_wilder_atr(df, ATR_PERIOD)
+    df["max_allowed_body"] = BODY_ATR_MULT * df["atr"]
+
+    last4 = df.iloc[-CONSEC_BARS:]
+    if last4["atr"].isna().any():
+        return None
+
+    # Condition 1: All 4 bars must have body < 0.67 * ATR(100)
+    if not (last4["body"] < last4["max_allowed_body"]).all():
+        return None
+
+    # Condition 2: 4 Consecutive Closes (Bullish rising or Bearish falling)
+    closes = df["close"].iloc[-(CONSEC_BARS + 1):].values
+    # closes[0] is bar[-5], closes[1..4] are the 4 compression bars
+    is_bull = all(closes[i] > closes[i - 1] for i in range(1, CONSEC_BARS + 1))
+    is_bear = all(closes[i] < closes[i - 1] for i in range(1, CONSEC_BARS + 1))
+
+    if not (is_bull or is_bear):
+        return None
+
+    last_bar = last4.iloc[-1]
+    prev_bar = df.iloc[-(CONSEC_BARS + 1)]
+    roc_pct = ((last_bar["close"] - prev_bar["close"]) / prev_bar["close"]) * 100.0
+    max_body_ratio = (last4["body"] / last4["atr"]).max()
+
+    return {
+        "signal": "BULL (4 Up Closes)" if is_bull else "BEAR (4 Down Closes)",
+        "group": "BUY" if is_bull else "SELL",
+        "bar_time": last4.index[-1].strftime("%d-%b %H:%M"),
+        "close": round(float(last_bar["close"]), 2),
+        "atr": round(float(last_bar["atr"]), 2),
+        "max_body": round(float(last4["body"].max()), 2),
+        "body_atr_ratio": round(float(max_body_ratio), 2),
+        "roc_pct": round(float(roc_pct), 2)
+    }
+
+# ==============================================================================
+# 4. EMAIL ALERT FUNCTION
+# ==============================================================================
+def send_email_alert(matches, evaluated_bar_str):
+    now_str = datetime.now(IST).strftime("%d-%b %H:%M:%S")
+    subject = f"🎯 77m 4-Bar Alert [{evaluated_bar_str}] ({len(matches)} Matches) - ({now_str})"
+
+    buy_matches = sorted([m for m in matches if m["group"] == "BUY"], key=lambda x: x["roc_pct"], reverse=True)
+    sell_matches = sorted([m for m in matches if m["group"] == "SELL"], key=lambda x: x["roc_pct"])
+
+    buy_top5 = ", ".join([m["stock"] for m in buy_matches[:5]]) or "None"
+    sell_top5 = ", ".join([m["stock"] for m in sell_matches[:5]]) or "None"
+    buy_all = ", ".join([m["stock"] for m in buy_matches]) or "None"
+    sell_all = ", ".join([m["stock"] for m in sell_matches]) or "None"
+
+    body_lines = [
+        f"Futures 77-Min (4-Bar) Compression Scan at {now_str}",
+        f"Completed Bar Evaluated: {evaluated_bar_str}\n",
+        f"📋 BUY GROUP - Top 5 (Copy & Paste into Zone):\n{buy_top5}\n",
+        f"📋 SELL GROUP - Top 5 (Copy & Paste into Zone):\n{sell_top5}\n",
+        f"All BUY ({len(buy_matches)}): {buy_all}",
+        f"All SELL ({len(sell_matches)}): {sell_all}\n"
+    ]
+
+    if matches:
+        table_rows = [
+            [
+                m["stock"],
+                m["signal"],
+                m["bar_time"],
+                m["close"],
+                m["atr"],
+                m["max_body"],
+                m["body_atr_ratio"],
+                f"{m['roc_pct']}%"
+            ]
+            for m in (buy_matches + sell_matches)
+        ]
+        headers = ["Stock", "Setup", "Bar Start", "Close", "ATR(100)", "Max4Body", "Body/ATR", "4-Bar ROC%"]
+        body_lines.append(tabulate(table_rows, headers=headers, tablefmt="grid"))
+    else:
+        body_lines.append("No stocks matched the 77m 4-bar compression criteria on this bar.")
+
+    msg = MIMEMultipart()
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECEIVER_EMAIL
+    msg["Subject"] = subject
+    msg.attach(MIMEText("\n".join(body_lines), "plain"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(SENDER_EMAIL, APP_PASSWORD)
+        server.send_message(msg)
+
+    print(f"✅ Alert email successfully sent for bar [{evaluated_bar_str}]!")
+
+# ==============================================================================
+# 5. MAIN SCANNER EXECUTION
+# ==============================================================================
+def run_single_scan():
+    now_ist = datetime.now(IST)
+    print(f"\n🚀 Starting 77m Futures 4-Bar Compression Scan at {now_ist.strftime('%Y-%m-%d %H:%M:%S IST')}")
+
+    ic = login_definedge()
+    futures = get_current_month_nfo_futures()
+    total = len(futures)
+    print(f"Loaded {total} NFO Stock Futures.")
+
+    start_dt = (now_ist - timedelta(days=LOOKBACK_DAYS)).replace(hour=9, minute=15, second=0, microsecond=0)
+    matches = []
+    evaluated_bar_str = "N/A"
+
+    for idx, fut in enumerate(futures, 1):
+        symbol = fut["underlying"]
+        trd_sym = fut["trading_symbol"]
+        print(f"Scanning {symbol} ({idx}/{total})...", flush=True)
+
+        try:
+            hist = ic.historical_data(
+                exchange="NFO",
+                trading_symbol=trd_sym,
+                timeframe=ic.TIMEFRAME_TYPE_MIN,
+                start=start_dt,
+                end=now_ist
+            )
+            df = pd.DataFrame(list(hist))
+            if df.empty:
+                continue
+
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            if df["datetime"].dt.tz is None:
+                df["datetime"] = df["datetime"].dt.tz_localize(IST)
+            else:
+                df["datetime"] = df["datetime"].dt.tz_convert(IST)
+
+            df = df.set_index("datetime").sort_index()
+            for col in ["open", "high", "low", "close", "volume"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            df_77m = resample_to_77m(df, now_ist)
+            if df_77m.empty:
+                continue
+
+            evaluated_bar_str = df_77m.index[-1].strftime("%d-%b %H:%M")
+            res = evaluate_4bar_compression(df_77m)
+            if res:
+                res["stock"] = symbol
+                matches.append(res)
+
+        except Exception as e:
+            print(f"⚠️ Error scanning {symbol}: {e}", flush=True)
+
+    send_email_alert(matches, evaluated_bar_str)
+
+if __name__ == "__main__":
+    run_single_scan()
