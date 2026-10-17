@@ -15,15 +15,15 @@ from tabulate import tabulate
 from integrate import ConnectToIntegrate, IntegrateData
 
 # ==============================================================================
-# 1. CREDENTIALS & CONFIGURATION (Paste your API keys in quotes below)
+# 1. CREDENTIALS & CONFIGURATION
 # ==============================================================================
-API_TOKEN = (os.environ.get("DEFINEDGE_API_TOKEN") or "YOUR_API_TOKEN").strip()
-API_SECRET = (os.environ.get("DEFINEDGE_API_SECRET") or "YOUR_API_SECRET").strip()
-TOTP_SECRET = (os.environ.get("DEFINEDGE_TOTP_SECRET") or "YOUR_TOTP_SECRET").strip()
+API_TOKEN = os.environ.get("DEFINEDGE_API_TOKEN", "7eb93aac-c746-44bd-9755-18ae6289fdfc")
+API_SECRET = os.environ.get("DEFINEDGE_API_SECRET", "snToBptj6e2X/c9c7POM8Q==")
+TOTP_SECRET = os.environ.get("DEFINEDGE_TOTP_SECRET", "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR")
 
-SENDER_EMAIL = (os.environ.get("SENDER_EMAIL") or "balanisuresh@gmail.com").strip()
-RECEIVER_EMAIL = (os.environ.get("RECEIVER_EMAIL") or "balanisuresh@gmail.com").strip()
-APP_PASSWORD = (os.environ.get("APP_PASSWORD") or "YOUR_GMAIL_APP_PASSWORD").strip()
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "balanisuresh@gmail.com")
+RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "balanisuresh@gmail.com")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "YOUR_GMAIL_APP_PASSWORD")
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -108,6 +108,12 @@ def get_current_month_nfo_futures(conn=None):
 # ==============================================================================
 # 3. 77-MINUTE RESAMPLING & 5-BAR COMPRESSION LOGIC
 # ==============================================================================
+# Exact 77m bar boundaries across the 09:15 - 15:40 NFO session:
+# Bar 1: 09:15 - 10:32
+# Bar 2: 10:32 - 11:49
+# Bar 3: 11:49 - 13:06
+# Bar 4: 13:06 - 14:23
+# Bar 5: 14:23 - 15:40
 BAR_CLOSURE_TIMES = [
     (dtime(9, 15), dtime(10, 32)),
     (dtime(10, 32), dtime(11, 49)),
@@ -197,8 +203,8 @@ def evaluate_5bar_compression(df_77m):
         return None
 
     # Condition 2: 5 Consecutive Pullback Closes
-    # 5 Down Closes with narrow body = Bullish compression pullback -> BUY Group
-    # 5 Up Closes with narrow body   = Bearish compression pullback -> SELL Group
+    # 5 Down Closes with narrow body = Bullish pullback -> BUY Group
+    # 5 Up Closes with narrow body   = Bearish pullback -> SELL Group
     closes = df["close"].iloc[-(CONSEC_BARS + 1):].values
     is_bull_setup = all(closes[i] < closes[i - 1] for i in range(1, CONSEC_BARS + 1))
     is_bear_setup = all(closes[i] > closes[i - 1] for i in range(1, CONSEC_BARS + 1))
@@ -229,8 +235,6 @@ def send_email_alert(matches, evaluated_bar_str):
     now_str = datetime.now(IST).strftime("%d-%b %H:%M:%S")
     subject = f"🎯 77m 5-Bar Alert [{evaluated_bar_str}] ({len(matches)} Matches) - ({now_str})"
 
-    # BUY (5 down closes) sorted by deepest pullback (most negative ROC% first)
-    # SELL (5 up closes) sorted by highest bounce (most positive ROC% first)
     buy_matches = sorted([m for m in matches if m["group"] == "BUY"], key=lambda x: x["roc_pct"])
     sell_matches = sorted([m for m in matches if m["group"] == "SELL"], key=lambda x: x["roc_pct"], reverse=True)
 
@@ -287,7 +291,6 @@ def run_single_scan():
     current_t = now_ist.time()
     event_name = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
 
-    # Prevent delayed cron runs after 16:00 IST from locking the runner
     if event_name == "schedule" and (current_t < dtime(10, 25) or current_t > dtime(16, 0)):
         print(f"⏹️ Outside 77m market scan window ({now_ist.strftime('%H:%M:%S IST')}). Exiting to free runner.")
         sys.exit(0)
