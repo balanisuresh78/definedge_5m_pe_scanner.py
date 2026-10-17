@@ -315,9 +315,9 @@ def run_single_scan():
 
         try:
             hist = ic.historical_data(
-                exchange="NFO",
+                exchange=conn.EXCHANGE_TYPE_NFO,
                 trading_symbol=trd_sym,
-                timeframe=ic.TIMEFRAME_TYPE_MIN,
+                timeframe=conn.TIMEFRAME_TYPE_MIN,
                 start=start_dt,
                 end=now_ist
             )
@@ -350,6 +350,9 @@ def run_single_scan():
             print(f"⚠️ Error scanning {symbol}: {e}", flush=True)
 
     send_email_alert(matches, evaluated_bar_str)
+
+if __name__ == "__main__":
+    run_single_scan()
 
 if __name__ == "__main__":
     run_single_scan()
