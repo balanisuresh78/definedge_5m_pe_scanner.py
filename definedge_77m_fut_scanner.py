@@ -22,7 +22,7 @@ API_SECRET = (os.environ.get("DEFINEDGE_API_SECRET") or "snToBptj6e2X/c9c7POM8Q=
 TOTP_SECRET = (os.environ.get("DEFINEDGE_TOTP_SECRET") or "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR").strip()
 
 SENDER_EMAIL = (os.environ.get("SENDER_EMAIL") or "balanisuresh@gmail.com").strip()
-RECEIVER_EMAIL = (os.environ.get("RECEIVER_EMAIL") or balanisuresh@gmail.com.strip()
+RECEIVER_EMAIL = (os.environ.get("RECEIVER_EMAIL") or "balanisuresh@gmail.com").strip()
 APP_PASSWORD = (os.environ.get("APP_PASSWORD") or "YOUR_GMAIL_APP_PASSWORD").strip()
 
 IST = pytz.timezone("Asia/Kolkata")
