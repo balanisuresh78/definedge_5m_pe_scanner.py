@@ -15,11 +15,11 @@ from tabulate import tabulate
 from integrate import ConnectToIntegrate, IntegrateData
 
 # ==============================================================================
-# 1. CREDENTIALS & CONFIGURATION (Copy from your working 129m script)
+# 1. CREDENTIALS & CONFIGURATION (Paste your API keys in quotes below)
 # ==============================================================================
-API_TOKEN = (os.environ.get("DEFINEDGE_API_TOKEN") or "7eb93aac-c746-44bd-9755-18ae6289fdfc").strip()
-API_SECRET = (os.environ.get("DEFINEDGE_API_SECRET") or "snToBptj6e2X/c9c7POM8Q==").strip()
-TOTP_SECRET = (os.environ.get("DEFINEDGE_TOTP_SECRET") or "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR").strip()
+API_TOKEN = (os.environ.get("DEFINEDGE_API_TOKEN") or "YOUR_API_TOKEN").strip()
+API_SECRET = (os.environ.get("DEFINEDGE_API_SECRET") or "YOUR_API_SECRET").strip()
+TOTP_SECRET = (os.environ.get("DEFINEDGE_TOTP_SECRET") or "YOUR_TOTP_SECRET").strip()
 
 SENDER_EMAIL = (os.environ.get("SENDER_EMAIL") or "balanisuresh@gmail.com").strip()
 RECEIVER_EMAIL = (os.environ.get("RECEIVER_EMAIL") or "balanisuresh@gmail.com").strip()
@@ -35,7 +35,7 @@ CONSEC_BARS = 5
 LOOKBACK_DAYS = 75
 
 # ==============================================================================
-# 2. DEFINEDGE LOGIN & MASTER SYMBOL FETCH (FIXED COLUMN 5 / SYMBOLS PARSER)
+# 2. DEFINEDGE LOGIN & MASTER SYMBOL FETCH
 # ==============================================================================
 def login_definedge():
     conn = ConnectToIntegrate()
@@ -58,7 +58,6 @@ def get_current_month_nfo_futures(conn=None):
     today = datetime.now(IST).date()
     records = []
 
-    # Method 1: Use pyintegrate's built-in conn.symbols if available
     if conn is not None and hasattr(conn, "symbols") and conn.symbols:
         for sym in conn.symbols:
             if sym.get("segment") == "NFO" and sym.get("instrument_type") == "FUTSTK":
@@ -71,7 +70,6 @@ def get_current_month_nfo_futures(conn=None):
                         "expiry": exp_date
                     })
 
-    # Method 2: Fallback to allmaster.zip (Column 5 is Expiry in DDMMYYYY)
     if not records:
         url = "https://app.definedgesecurities.com/public/allmaster.zip"
         resp = requests.get(url, timeout=30)
@@ -83,7 +81,6 @@ def get_current_month_nfo_futures(conn=None):
                 df = pd.read_csv(f, header=None, dtype=str, low_memory=False)
 
         nfo = df[(df[0] == "NFO") & (df[4] == "FUTSTK")].copy()
-        # In Definedge allmaster.zip, Column 5 is DDMMYYYY expiry
         for exp_col in [5, 8, 6, 7]:
             if exp_col in nfo.columns:
                 parsed = pd.to_datetime(nfo[exp_col], format="%d%m%Y", errors="coerce")
@@ -104,7 +101,6 @@ def get_current_month_nfo_futures(conn=None):
         return []
 
     df_fut = pd.DataFrame(records)
-    # Pick nearest expiry per underlying stock
     df_fut = df_fut.sort_values("expiry").groupby("underlying", as_index=False).first()
     df_fut = df_fut.sort_values("underlying").reset_index(drop=True)
     return df_fut.to_dict("records")
@@ -158,7 +154,6 @@ def resample_to_77m(df_1m, now_ist):
 
     df_77m = pd.concat(resampled_chunks).sort_index()
 
-    # On weekdays during market hours, drop any currently forming bar from today
     today_date = now_ist.date()
     latest_completed_start = get_latest_completed_bar_start(now_ist)
 
@@ -201,12 +196,14 @@ def evaluate_5bar_compression(df_77m):
     if not (last5["body"] < last5["max_allowed_body"]).all():
         return None
 
-    # Condition 2: 5 Consecutive Closes (Bullish rising or Bearish falling)
+    # Condition 2: 5 Consecutive Pullback Closes
+    # 5 Down Closes with narrow body = Bullish compression pullback -> BUY Group
+    # 5 Up Closes with narrow body   = Bearish compression pullback -> SELL Group
     closes = df["close"].iloc[-(CONSEC_BARS + 1):].values
-    is_bull = all(closes[i] > closes[i - 1] for i in range(1, CONSEC_BARS + 1))
-    is_bear = all(closes[i] < closes[i - 1] for i in range(1, CONSEC_BARS + 1))
+    is_bull_setup = all(closes[i] < closes[i - 1] for i in range(1, CONSEC_BARS + 1))
+    is_bear_setup = all(closes[i] > closes[i - 1] for i in range(1, CONSEC_BARS + 1))
 
-    if not (is_bull or is_bear):
+    if not (is_bull_setup or is_bear_setup):
         return None
 
     last_bar = last5.iloc[-1]
@@ -215,8 +212,8 @@ def evaluate_5bar_compression(df_77m):
     max_body_ratio = (last5["body"] / last5["atr"]).max()
 
     return {
-        "signal": "BULL (5 Up Closes)" if is_bull else "BEAR (5 Down Closes)",
-        "group": "BUY" if is_bull else "SELL",
+        "signal": "BULL (5 Down Closes)" if is_bull_setup else "BEAR (5 Up Closes)",
+        "group": "BUY" if is_bull_setup else "SELL",
         "bar_time": last5.index[-1].strftime("%d-%b %H:%M"),
         "close": round(float(last_bar["close"]), 2),
         "atr": round(float(last_bar["atr"]), 2),
@@ -232,8 +229,10 @@ def send_email_alert(matches, evaluated_bar_str):
     now_str = datetime.now(IST).strftime("%d-%b %H:%M:%S")
     subject = f"🎯 77m 5-Bar Alert [{evaluated_bar_str}] ({len(matches)} Matches) - ({now_str})"
 
-    buy_matches = sorted([m for m in matches if m["group"] == "BUY"], key=lambda x: x["roc_pct"], reverse=True)
-    sell_matches = sorted([m for m in matches if m["group"] == "SELL"], key=lambda x: x["roc_pct"])
+    # BUY (5 down closes) sorted by deepest pullback (most negative ROC% first)
+    # SELL (5 up closes) sorted by highest bounce (most positive ROC% first)
+    buy_matches = sorted([m for m in matches if m["group"] == "BUY"], key=lambda x: x["roc_pct"])
+    sell_matches = sorted([m for m in matches if m["group"] == "SELL"], key=lambda x: x["roc_pct"], reverse=True)
 
     buy_top5 = ", ".join([m["stock"] for m in buy_matches[:5]]) or "None"
     sell_top5 = ", ".join([m["stock"] for m in sell_matches[:5]]) or "None"
@@ -350,9 +349,6 @@ def run_single_scan():
             print(f"⚠️ Error scanning {symbol}: {e}", flush=True)
 
     send_email_alert(matches, evaluated_bar_str)
-
-if __name__ == "__main__":
-    run_single_scan()
 
 if __name__ == "__main__":
     run_single_scan()
