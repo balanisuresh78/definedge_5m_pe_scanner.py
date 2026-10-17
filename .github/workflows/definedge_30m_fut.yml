@@ -38,8 +38,8 @@ jobs:
           DEFINEDGE_TOTP_SECRET: ${{ secrets.DEFINEDGE_TOTP_SECRET }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
-          # Automatically finds and runs your 30m python script
           if [ -f "definedge_30m_fut_scanner.py" ]; then
             python definedge_30m_fut_scanner.py
           elif [ -f "scanner_30m.py" ]; then
