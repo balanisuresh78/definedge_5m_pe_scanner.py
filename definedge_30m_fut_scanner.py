@@ -1,389 +1,319 @@
 import os
+import sys
+import zipfile
+import io
 import smtplib
-from email.message import EmailMessage
-from datetime import datetime, timedelta
-import pytz
 import pyotp
+import requests
+import pytz
 import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta, time as dtime
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from tabulate import tabulate
 from integrate import ConnectToIntegrate, IntegrateData
-import warnings
 
-warnings.simplefilter(action='ignore', category=FutureWarning)
+# ==============================================================================
+# 1. CREDENTIALS & CONFIGURATION
+# ==============================================================================
+API_TOKEN = os.environ.get("DEFINEDGE_API_TOKEN", "YOUR_API_TOKEN")
+API_SECRET = os.environ.get("DEFINEDGE_API_SECRET", "YOUR_API_SECRET")
+TOTP_SECRET = os.environ.get("DEFINEDGE_TOTP_SECRET", "YOUR_TOTP_SECRET")
 
-# ==========================================
-# 1. CONFIGURATION
-# ==========================================
-API_TOKEN = "7eb93aac-c746-44bd-9755-18ae6289fdfc"
-API_SECRET = "snToBptj6e2X/c9c7POM8Q=="
-TOTP_SECRET = "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR"
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "your_email@gmail.com")
+RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "your_email@gmail.com")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "YOUR_GMAIL_APP_PASSWORD")
 
-SENDER_EMAIL = "balanisuresh@gmail.com"
-RECEIVER_EMAIL = "balanisuresh@gmail.com"
-APP_PASSWORD = os.environ.get("APP_PASSWORD")
+IST = pytz.timezone("Asia/Kolkata")
 
-# Strategy Parameters
-TF_MINUTES = 30               
-STOCH_K = 5                   
-STOCH_D = 3                   
-HIST_LOOKBACK_DAYS = 25       
+# 30-Minute ATR Retracement + Stochastic (5, 3, 3) Parameters
+TIMEFRAME_MIN = 30
+STOCH_K = 5
+STOCH_SMOOTH_K = 3
+STOCH_D = 3
+BULL_LEVEL = 31.0
+BEAR_LEVEL = 69.0
 
-fno_stocks = [
-    '360ONE', 'ABB', 'ABCAPITAL', 'ADANIENSOL', 'ADANIENT', 'ADANIGREEN', 'ADANIPORTS', 
-    'ADANIPOWER', 'ALKEM', 'AMBER', 'AMBUJACEM', 'ANGELONE', 'APLAPOLLO', 'APOLLOHOSP', 
-    'ASHOKLEY', 'ASIANPAINT', 'ASTRAL', 'ATHERENERG', 'AUBANK', 'AUROPHARMA', 'AXISBANK', 
-    'BAJAJ-AUTO', 'BAJAJFINSV', 'BAJAJHLDNG', 'BAJFINANCE', 'BANDHANBNK', 'BANKBARODA', 
-    'BANKINDIA', 'BDL', 'BEL', 'BHARATFORG', 'BHARTIARTL', 'BHEL', 'BIOCON', 
-    'BLUESTARCO', 'BOSCHLTD', 'BPCL', 'BRITANNIA', 'BSE', 'CAMS', 'CANBK', 'CDSL', 
-    'CGPOWER', 'CHOLAFIN', 'CIPLA', 'COALINDIA', 'COCHINSHIP', 'COFORGE', 'COLPAL', 
-    'CONCOR', 'CROMPTON', 'CUMMINSIND', 'DABUR', 'DELHIVERY', 'DIVISLAB', 'DIXON', 
-    'DLF', 'DMART', 'DRREDDY', 'EICHERMOT', 'ETERNAL', 'FEDERALBNK', 'FORCEMOT', 'FORTIS', 
-    'GAIL', 'GLENMARK', 'GMRAIRPORT', 'GODFRYPHLP', 'GODREJCP', 'GODREJPROP', 'GRASIM', 
-    'GVT&D', 'HAL', 'HAVELLS', 'HCLTECH', 'HDFCAMC', 'HDFCBANK', 'HDFCLIFE', 'HEROMOTOCO', 
-    'HINDALCO', 'HINDPETRO', 'HINDUNILVR', 'HINDZINC', 'HYUNDAI', 'ICICIBANK', 'ICICIGI', 
-    'ICICIPRULI', 'IDEA', 'IDFCFIRSTB', 'IEX', 'INDHOTEL', 'INDIANB', 'INDIGO', 
-    'INDUSINDBK', 'INDUSTOWER', 'INFY', 'INOXWIND', 'IOC', 'IREDA', 'IRFC', 'ITC', 
-    'JINDALSTEL', 'JIOFIN', 'JSWENERGY', 'JSWSTEEL', 'JUBLFOOD', 'KALYANKJIL', 'KAYNES', 
-    'KEI', 'KFINTECH', 'KOTAKBANK', 'KPITTECH', 'LAURUSLABS', 'LICHSGFIN', 'LICI', 
-    'LODHA', 'LT', 'LTF', 'LTM', 'LUPIN', 'M&M', 'MAHABANK', 'MANAPPURAM', 'MANKIND', 
-    'MARICO', 'MARUTI', 'MAXHEALTH', 'MAZDOCK', 'MCX', 'MFSL', 'MOTHERSON', 'MOTILALOFS', 
-    'MPHASIS', 'MUTHOOTFIN', 'NAM-INDIA', 'NATIONALUM', 'NAUKRI', 'NBCC', 'NESTLEIND', 
-    'NHPC', 'NMDC', 'NTPC', 'NYKAA', 'OBEROIRLTY', 'OFSS', 'OIL', 'ONGC', 
-    'PAGEIND', 'PATANJALI', 'PAYTM', 'PERSISTENT', 'PETRONET', 'PFC', 'PGEL', 'PHOENIXLTD', 
-    'PIDILITIND', 'PIIND', 'PNB', 'PNBHOUSING', 'POLICYBZR', 'POLYCAB', 'POWERGRID', 
-    'POWERINDIA', 'PREMIERENE', 'PRESTIGE', 'RADICO', 'RBLBANK', 'RECLTD', 'RELIANCE', 
-    'RVNL', 'SAGILITY', 'SAIL', 'SBICARD', 'SBILIFE', 'SBIN', 'SHREECEM', 'SHRIRAMFIN', 
-    'SIEMENS', 'SOLARINDS', 'SONACOMS', 'SRF', 'SUNPHARMA', 'SUPREMEIND', 'SUZLON', 
-    'SWIGGY', 'TATACONSUM', 'TATAELXSI', 'TATAPOWER', 'TATASTEEL', 'TCS', 'TECHM', 
-    'TIINDIA', 'TITAN', 'TMPV', 'TORNTPHARM', 'TRENT', 'TVSMOTOR', 'ULTRACEMCO', 
-    'UNIONBANK', 'UNITDSPR', 'UNOMINDA', 'UPL', 'VBL', 'VEDL', 'VMM', 'VOLTAS', 
-    'WAAREEENER', 'WIPRO', 'YESBANK', 'ZYDUSLIFE'
+ATR_PERIOD = 2
+REF_ATR_LOOKBACK = 5
+BODY_ATR_MULT = 0.70  # Max corrective body < 70% of Ref ATR
+LOOKBACK_DAYS = 25
+
+# ==============================================================================
+# 2. DEFINEDGE LOGIN & MASTER SYMBOL FETCH
+# ==============================================================================
+def login_definedge():
+    conn = ConnectToIntegrate()
+    totp = pyotp.TOTP(TOTP_SECRET).now()
+    conn.login(api_token=API_TOKEN, api_secret=API_SECRET, totp=totp)
+    return IntegrateData(conn)
+
+def get_current_month_nfo_futures():
+    url = "https://app.definedgesecurities.com/public/allmaster.zip"
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+        csv_name = z.namelist()[0]
+        with z.open(csv_name) as f:
+            df = pd.read_csv(f, header=None, low_memory=False)
+
+    nfo = df[(df[0] == "NFO") & (df[4] == "FUTSTK")].copy()
+    nfo["expiry"] = pd.to_datetime(nfo[8], format="%d%m%Y", errors="coerce")
+    today = pd.Timestamp(datetime.now(IST).date())
+    nfo = nfo[nfo["expiry"] >= today]
+
+    nfo = nfo.sort_values("expiry").groupby(2, as_index=False).first()
+    nfo = nfo.sort_values(2).reset_index(drop=True)
+
+    return [
+        {
+            "underlying": str(row[2]).strip(),
+            "trading_symbol": str(row[3]).strip(),
+            "token": str(row[1]).strip()
+        }
+        for _, row in nfo.iterrows()
+    ]
+
+# ==============================================================================
+# 3. 30-MINUTE RESAMPLING & INDICATOR LOGIC
+# ==============================================================================
+# 30m session bar closures (09:15 to 15:30 IST)
+BAR_CLOSURE_TIMES = [
+    (dtime(9, 15), dtime(9, 45)),
+    (dtime(9, 45), dtime(10, 15)),
+    (dtime(10, 15), dtime(10, 45)),
+    (dtime(10, 45), dtime(11, 15)),
+    (dtime(11, 15), dtime(11, 45)),
+    (dtime(11, 45), dtime(12, 15)),
+    (dtime(12, 15), dtime(12, 45)),
+    (dtime(12, 45), dtime(13, 15)),
+    (dtime(13, 15), dtime(13, 45)),
+    (dtime(13, 45), dtime(14, 15)),
+    (dtime(14, 15), dtime(14, 45)),
+    (dtime(14, 45), dtime(15, 15)),
+    (dtime(15, 15), dtime(15, 30)),
 ]
 
-# ==========================================
-# 2. HELPER & CALCULATION FUNCTIONS
-# ==========================================
-def parse_expiry_date(exp_str):
-    if not exp_str: return None
-    exp_str = str(exp_str).strip()
-    for fmt in ("%d%m%Y", "%Y-%m-%d", "%d-%b-%Y", "%d%b%Y"):
-        try:
-            return datetime.strptime(exp_str, fmt).date()
-        except ValueError:
-            continue
-    return None
+def get_latest_completed_30m_start(now_ist):
+    current_t = now_ist.time()
+    completed_start = None
+    for start_t, end_t in BAR_CLOSURE_TIMES:
+        if current_t >= end_t:
+            completed_start = start_t
+    return completed_start
 
-def parse_historical_to_df(hist_generator):
-    rows = []
-    for item in hist_generator:
-        if isinstance(item, dict):
-            dt_val = item.get("datetime") or item.get("date") or item.get("time")
-            o, h, l, c = item.get("open", 0), item.get("high", 0), item.get("low", 0), item.get("close", 0)
-            v = item.get("volume", 0)
-            rows.append([dt_val, float(o), float(h), float(l), float(c), float(v)])
-        elif isinstance(item, (list, tuple)) and len(item) >= 6:
-            rows.append([item[0], float(item[1]), float(item[2]), float(item[3]), float(item[4]), float(item[5])])
-        elif isinstance(item, str):
-            parts = item.strip().split(",")
-            if len(parts) >= 6:
-                rows.append([parts[0], float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4]), float(parts[5])])
-
-    if not rows: return pd.DataFrame()
-    df = pd.DataFrame(rows, columns=["Datetime", "Open", "High", "Low", "Close", "Volume"])
-    for col in ["Open", "High", "Low", "Close", "Volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    if not np.issubdtype(df["Datetime"].dtype, np.datetime64):
-        try:
-            df["Datetime"] = pd.to_datetime(df["Datetime"], format="%d%m%Y%H%M")
-        except Exception:
-            df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
-
-    df.dropna(subset=["Datetime", "Close"], inplace=True)
-    df.sort_values("Datetime", inplace=True)
-    return df.reset_index(drop=True)
-
-def resample_1m_to_custom_tf(df_1m, now_ist, tf_minutes):
-    if df_1m.empty: return pd.DataFrame()
+def resample_to_30m(df_1m, now_ist):
     df = df_1m.copy()
-    mins_from_open = (df["Datetime"].dt.hour - 9) * 60 + df["Datetime"].dt.minute - 15
-    valid_mask = (mins_from_open >= 0) & (mins_from_open < 375)
-    df = df.loc[valid_mask].copy()
-    if df.empty: return pd.DataFrame()
+    df = df.between_time("09:15", "15:30")
+    if df.empty:
+        return pd.DataFrame()
 
-    df["Date_Only"] = df["Datetime"].dt.date
-    df["Bin"] = ((df["Datetime"].dt.hour - 9) * 60 + df["Datetime"].dt.minute - 15) // tf_minutes
+    resampled_chunks = []
+    for trade_date, group in df.groupby(df.index.date):
+        bars = group.resample(
+            "30min",
+            origin="start_day",
+            offset="9h15min",
+            label="left",
+            closed="left"
+        ).agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }).dropna(subset=["open", "close"])
 
-    grouped = df.groupby(["Date_Only", "Bin"])
-    df_tf = grouped.agg(
-        Datetime=("Datetime", "first"),
-        Open=("Open", "first"),
-        High=("High", "max"),
-        Low=("Low", "min"),
-        Close=("Close", "last"),
-        Volume=("Volume", "sum")
-    ).reset_index()
+        bars = bars[bars.index.time <= dtime(15, 15)]
+        resampled_chunks.append(bars)
 
-    last_row = df_tf.iloc[-1]
-    last_date = last_row["Date_Only"]
-    last_bin = int(last_row["Bin"])
-    end_mins_from_open = min((last_bin + 1) * tf_minutes, 375)
-    bin_close_dt = datetime.combine(last_date, datetime.min.time()) + timedelta(hours=9, minutes=15 + end_mins_from_open)
+    if not resampled_chunks:
+        return pd.DataFrame()
 
-    now_naive_ist = now_ist.replace(tzinfo=None)
-    if now_naive_ist < bin_close_dt:
-        df_tf = df_tf.iloc[:-1]
-
-    df_tf.drop(columns=["Date_Only", "Bin"], inplace=True)
-    return df_tf.reset_index(drop=True)
-
-def calculate_stoch_d(df, k_period=5, d_period=3):
-    """Calculates Slow Stochastic matching standard charting platforms."""
-    low_min = df["Low"].rolling(window=k_period).min()
-    high_max = df["High"].rolling(window=k_period).max()
-    denom = (high_max - low_min).replace(0, np.nan)
-    
-    # Raw Fast %K
-    raw_k = 100.0 * ((df["Close"] - low_min) / denom)
-    
-    # Smoothing %K (Slow Stochastic)
-    # Platforms typically apply a 3-period SMA to %K before calculating %D
-    stoch_k_smoothed = raw_k.rolling(window=3).mean() 
-    
-    # Final %D (Moving average of the smoothed %K)
-    return stoch_k_smoothed.rolling(window=d_period).mean()
-
-def calculate_atr(df, period=2):
-    high_low = df['High'] - df['Low']
-    high_close = (df['High'] - df['Close'].shift()).abs()
-    low_close = (df['Low'] - df['Close'].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(window=period).mean()
-
-# ==========================================
-# 3. STRATEGY LOGIC EVALUATORS
-# ==========================================
-def evaluate_bullish_setup(df, current_idx):
-    # 1. Find the recent Closing Peak (Top of the UP impulse)
-    search_window = df.loc[max(0, current_idx - 40):current_idx]
-    peak_idx = search_window['Close'].idxmax()
-    if peak_idx >= current_idx or peak_idx == max(0, current_idx - 40): 
-        return False
-        
-    # 2. Find the Trough (Bottom of the UP impulse)
-    trough_window = df.loc[max(0, peak_idx - 40):peak_idx]
-    trough_idx = trough_window['Close'].idxmin()
-    if trough_idx >= peak_idx or trough_idx == max(0, peak_idx - 40): 
-        return False
-        
-    impulse_df = df.loc[trough_idx:peak_idx]
-    correction_df = df.loc[peak_idx:current_idx]
-    
-    # 3. Impulse Checks (Targeting UP Bars)
-    up_bars = impulse_df[impulse_df['Close'] > impulse_df['Open']]
-    if len(up_bars) > 10 or len(up_bars) == 0: 
-        return False
-        
-    signal_found = False
-    for idx in up_bars.index:
-        if idx > 0 and pd.notna(df.loc[idx, 'ATR2']) and pd.notna(df.loc[idx-1, 'ATR2']):
-            if df.loc[idx, 'ATR2'] >= 1.33 * df.loc[idx-1, 'ATR2']:
-                signal_found = True
-                break
-    if not signal_found: 
-        return False
-    
-    # 4. Reference ATR
-    atr_values = up_bars['ATR2'].sort_values(ascending=False)
-    top_n = max(1, len(atr_values) // 2)
-    ref_atr = atr_values.head(top_n).mean()
-    
-    # 5. Correction Checks (Targeting DOWN Bars)
-    down_bars = correction_df[correction_df['Close'] < correction_df['Open']]
-    if len(down_bars) == 0: 
-        return False 
-    
-    bodies = (down_bars['Open'] - down_bars['Close']).abs()
-    if all(bodies < (0.75 * ref_atr)):
-        return {"Signal": "Bullish 🟢", "Ref ATR": round(ref_atr, 2), "Max Body": round(bodies.max(), 2)}
-    return False
-
-def evaluate_bearish_setup(df, current_idx):
-    # 1. Find the recent Closing Trough (Bottom of the DOWN impulse)
-    search_window = df.loc[max(0, current_idx - 40):current_idx]
-    trough_idx = search_window['Close'].idxmin()
-    if trough_idx >= current_idx or trough_idx == max(0, current_idx - 40): 
-        return False
-        
-    # 2. Find the Peak (Top of the DOWN impulse)
-    peak_window = df.loc[max(0, trough_idx - 40):trough_idx]
-    peak_idx = peak_window['Close'].idxmax()
-    if peak_idx >= trough_idx or peak_idx == max(0, trough_idx - 40): 
-        return False
-        
-    impulse_df = df.loc[peak_idx:trough_idx]
-    correction_df = df.loc[trough_idx:current_idx]
-    
-    # 3. Impulse Checks (Targeting DOWN Bars)
-    down_bars = impulse_df[impulse_df['Close'] < impulse_df['Open']]
-    if len(down_bars) > 10 or len(down_bars) == 0: 
-        return False
-        
-    signal_found = False
-    for idx in down_bars.index:
-        if idx > 0 and pd.notna(df.loc[idx, 'ATR2']) and pd.notna(df.loc[idx-1, 'ATR2']):
-            if df.loc[idx, 'ATR2'] >= 1.33 * df.loc[idx-1, 'ATR2']:
-                signal_found = True
-                break
-    if not signal_found: 
-        return False
-    
-    # 4. Reference ATR
-    atr_values = down_bars['ATR2'].sort_values(ascending=False)
-    top_n = max(1, len(atr_values) // 2)
-    ref_atr = atr_values.head(top_n).mean()
-    
-    # 5. Correction Checks (Targeting UP Bars)
-    up_bars = correction_df[correction_df['Close'] > correction_df['Open']]
-    if len(up_bars) == 0: 
-        return False 
-    
-    bodies = (up_bars['Close'] - up_bars['Open']).abs()
-    if all(bodies < (0.75 * ref_atr)):
-        return {"Signal": "Bearish 🔴", "Ref ATR": round(ref_atr, 2), "Max Body": round(bodies.max(), 2)}
-    return False
-
-# ==========================================
-# 4. NOTIFICATION & MAIN ENGINE
-# ==========================================
-def send_email_alert(results_df, timestamp):
-    if not APP_PASSWORD: return
-    msg = EmailMessage()
-    msg["Subject"] = f"🎯 30m Futures Alert: ATR Retracement Setup ({timestamp})"
-    msg["From"] = SENDER_EMAIL
-    msg["To"] = RECEIVER_EMAIL
-
-    html_table = results_df.to_html(index=False, justify="center")
-    body = (
-        f"<h3>30-Minute Stock Futures Scan at {timestamp}</h3>"
-        f"{html_table}"
-    )
-
-    msg.set_content(results_df.to_string(index=False))
-    msg.add_alternative(body, subtype="html")
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login(SENDER_EMAIL, APP_PASSWORD.replace(" ", ""))
-            smtp.send_message(msg)
-        print("✅ Alert email successfully sent!")
-    except Exception as e:
-        print(f"❌ Failed to send email: {e}")
-
-def run_definedge_30m_scan():
-    ist_tz = pytz.timezone("Asia/Kolkata")
-    now_ist = datetime.now(ist_tz)
-    now_ist_str = now_ist.strftime("%d-%b %H:%M:%S")
-    print(f"[{now_ist_str}] Logging into Definedge for 30m Futures Scan...")
-
-    conn = ConnectToIntegrate()
-    try:
-        current_totp = pyotp.TOTP(TOTP_SECRET.replace(" ", "")).now()
-        conn.login(api_token=API_TOKEN.strip(), api_secret=API_SECRET.strip(), totp=current_totp)
-        ic = IntegrateData(conn)
-        print("✅ Logged in! Indexing NFO Stock Futures...")
-    except Exception as auth_err:
-        print(f"❌ Definedge Login Failed: {auth_err}")
-        return
+    df_30m = pd.concat(resampled_chunks).sort_index()
 
     today_date = now_ist.date()
-    stock_set = set(fno_stocks)
-    fut_by_stock = {}
+    latest_completed_start = get_latest_completed_30m_start(now_ist)
 
-    for sym in conn.symbols:
-        if sym.get("segment") == conn.EXCHANGE_TYPE_NFO and sym.get("instrument_type") == "FUTSTK":
-            base_sym = sym.get("symbol")
-            if base_sym in stock_set:
-                exp_date = parse_expiry_date(sym.get("expiry"))
-                if exp_date and exp_date >= today_date:
-                    fut_by_stock.setdefault(base_sym, []).append((exp_date, sym))
+    if latest_completed_start is None:
+        df_30m = df_30m[df_30m.index.date < today_date]
+    else:
+        cutoff_dt = IST.localize(datetime.combine(today_date, latest_completed_start))
+        df_30m = df_30m[df_30m.index <= cutoff_dt]
 
-    results = []
-    end_time = now_ist.replace(tzinfo=None)
-    start_time = end_time - timedelta(days=HIST_LOOKBACK_DAYS)
+    return df_30m
 
-    for idx, stock in enumerate(fno_stocks, 1):
-        print(f"Scanning {stock} ({idx}/{len(fno_stocks)})...", flush=True)
-        if stock not in fut_by_stock: continue
+def calculate_indicators(df):
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    prev_close = close.shift(1)
 
-        all_entries = fut_by_stock[stock]
-        nearest_expiry = min(exp for exp, _ in all_entries)
-        fut_contract = next(sym for exp, sym in all_entries if exp == nearest_expiry)
-        fut_tsym = fut_contract["trading_symbol"]
+    # Wilder's ATR
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    df["atr"] = tr.ewm(alpha=1.0 / ATR_PERIOD, min_periods=ATR_PERIOD, adjust=False).mean()
+
+    # Stochastic (5, 3, 3)
+    lowest_low = low.rolling(window=STOCH_K).min()
+    highest_high = high.rolling(window=STOCH_K).max()
+    denom = (highest_high - lowest_low).replace(0, np.nan)
+    fast_k = 100.0 * ((close - lowest_low) / denom)
+    slow_k = fast_k.rolling(window=STOCH_SMOOTH_K).mean()
+    df["stoch_d"] = slow_k.rolling(window=STOCH_D).mean()
+    df["body"] = (df["close"] - df["open"]).abs()
+    return df
+
+def evaluate_30m_setup(df_30m):
+    if len(df_30m) < 20:
+        return None
+
+    df = calculate_indicators(df_30m.copy())
+    last_bar = df.iloc[-1]
+    prev_bar = df.iloc[-2]
+
+    if pd.isna(last_bar["stoch_d"]) or pd.isna(prev_bar["stoch_d"]) or pd.isna(last_bar["atr"]):
+        return None
+
+    prev_d = float(prev_bar["stoch_d"])
+    live_d = float(last_bar["stoch_d"])
+
+    # Bullish %D cross at 31 or Bearish %D cross at 69
+    is_bull = (prev_d > BULL_LEVEL and live_d <= BULL_LEVEL) or (prev_d < BULL_LEVEL and live_d >= BULL_LEVEL)
+    is_bear = (prev_d < BEAR_LEVEL and live_d >= BEAR_LEVEL) or (prev_d > BEAR_LEVEL and live_d <= BEAR_LEVEL)
+
+    if not (is_bull or is_bear):
+        return None
+
+    # Reference ATR from impulse phase & Max Body check on retracement bars
+    recent_window = df.iloc[-(REF_ATR_LOOKBACK + 2):-1]
+    ref_atr = float(recent_window["atr"].max())
+    retracement_bars = df.iloc[-3:]
+    max_body = float(retracement_bars["body"].max())
+
+    if ref_atr <= 0 or max_body >= (BODY_ATR_MULT * ref_atr):
+        return None
+
+    return {
+        "setup": "Bullish" if is_bull else "Bearish",
+        "bar_time": df.index[-1].strftime("%H:%M"),
+        "prev_d": round(prev_d, 2),
+        "live_d": round(live_d, 2),
+        "ref_atr": round(ref_atr, 2),
+        "max_body": round(max_body, 2),
+        "ratio": round(ref_atr / max(max_body, 0.01), 2)
+    }
+
+# ==============================================================================
+# 4. EMAIL ALERT FUNCTION
+# ==============================================================================
+def send_email_alert(matches):
+    now_str = datetime.now(IST).strftime("%d-%b %H:%M:%S")
+    subject = f"🎯 30m Futures Alert: ATR Retracement Setup ({now_str})"
+
+    matches_sorted = sorted(matches, key=lambda x: x["ratio"], reverse=True)
+
+    body_lines = [f"30-Minute Stock Futures Scan at {now_str}\n"]
+    if matches_sorted:
+        table_rows = [
+            [
+                m["stock"],
+                m["setup"],
+                m["bar_time"],
+                m["prev_d"],
+                m["live_d"],
+                m["ref_atr"],
+                m["max_body"]
+            ]
+            for m in matches_sorted
+        ]
+        headers = ["Stock", "Setup", "Bar Time", "Prev %D", "Live %D", "Ref ATR", "Max Body"]
+        body_lines.append(tabulate(table_rows, headers=headers, tablefmt="grid"))
+    else:
+        body_lines.append("No stocks matched the 30m ATR Retracement criteria on this bar.")
+
+    msg = MIMEMultipart()
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECEIVER_EMAIL
+    msg["Subject"] = subject
+    msg.attach(MIMEText("\n".join(body_lines), "plain"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(SENDER_EMAIL, APP_PASSWORD)
+        server.send_message(msg)
+
+    print(f"✅ 30m Alert email sent ({len(matches_sorted)} matches)!")
+
+# ==============================================================================
+# 5. MAIN EXECUTION (SINGLE RUN + 15:50 IST HARD CUTOFF)
+# ==============================================================================
+def run_scan():
+    now_ist = datetime.now(IST)
+    current_t = now_ist.time()
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
+
+    # Hard cutoff: if triggered by cron schedule outside 09:40 - 15:50 IST, exit immediately
+    if event_name == "schedule" and (current_t < dtime(9, 40) or current_t > dtime(15, 50)):
+        print(f"⏹️ Outside market scan window ({now_ist.strftime('%H:%M:%S IST')}). Exiting to free runner.")
+        sys.exit(0)
+
+    print(f"\n🚀 Starting 30m Futures Scan at {now_ist.strftime('%Y-%m-%d %H:%M:%S IST')}")
+    ic = login_definedge()
+    futures = get_current_month_nfo_futures()
+    total = len(futures)
+
+    start_dt = (now_ist - timedelta(days=LOOKBACK_DAYS)).replace(hour=9, minute=15, second=0, microsecond=0)
+    matches = []
+
+    for idx, fut in enumerate(futures, 1):
+        symbol = fut["underlying"]
+        trd_sym = fut["trading_symbol"]
+        print(f"Scanning {symbol} ({idx}/{total})...", flush=True)
 
         try:
-            hist_gen = ic.historical_data(
-                exchange=conn.EXCHANGE_TYPE_NFO,
-                trading_symbol=fut_tsym,
-                timeframe=conn.TIMEFRAME_TYPE_MIN,
-                start=start_time,
-                end=end_time,
+            hist = ic.historical_data(
+                exchange="NFO",
+                trading_symbol=trd_sym,
+                timeframe=ic.TIMEFRAME_TYPE_MIN,
+                start=start_dt,
+                end=now_ist
             )
-            df_1m = parse_historical_to_df(hist_gen)
-            if df_1m.empty: continue
+            df = pd.DataFrame(list(hist))
+            if df.empty:
+                continue
 
-            df_30m = resample_1m_to_custom_tf(df_1m, now_ist, TF_MINUTES)
-            if len(df_30m) < 60: continue 
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            if df["datetime"].dt.tz is None:
+                df["datetime"] = df["datetime"].dt.tz_localize(IST)
+            else:
+                df["datetime"] = df["datetime"].dt.tz_convert(IST)
 
-            df_30m["Stoch_D"] = calculate_stoch_d(df_30m, STOCH_K, STOCH_D)
-            df_30m["ATR2"] = calculate_atr(df_30m, 2)
+            df = df.set_index("datetime").sort_index()
+            for col in ["open", "high", "low", "close", "volume"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
 
-            current_idx = len(df_30m) - 1
-            curr_d = df_30m.loc[current_idx, 'Stoch_D']
-            prev_d = df_30m.loc[current_idx - 1, 'Stoch_D']
-            
-            if pd.isna(curr_d) or pd.isna(prev_d): continue
+            df_30m = resample_to_30m(df, now_ist)
+            if df_30m.empty:
+                continue
 
-            # Bullish Trigger: Drops below 31
-            stoch_crossed_31_downwards = (prev_d >= 31 and curr_d < 31)
-            
-            # Bearish Trigger: Crosses above 69 
-            # (Note: If you meant crossing DOWNWARDS from 69, change this to: prev >= 69 and curr < 69)
-            stoch_crossed_69_upwards = (prev_d <= 69 and curr_d > 69)
-            
-            match_data = False
-            
-            if stoch_crossed_31_downwards:
-                match_data = evaluate_bullish_setup(df_30m, current_idx)
-            elif stoch_crossed_69_upwards:
-                match_data = evaluate_bearish_setup(df_30m, current_idx)
-            
-            if match_data:
-                time_str = df_30m.loc[current_idx, 'Datetime'].strftime("%d-%b %H:%M")
-                curr_close = df_30m.loc[current_idx, 'Close']
-                print(f"  ✅ MATCH: {fut_tsym} | {match_data['Signal']} | Prev %D: {round(prev_d,1)} | Live %D: {round(curr_d,1)}")
-                
-                results.append({
-                    "Stock": stock,
-                    "Setup": match_data["Signal"],
-                    "Bar Time": time_str,
-                    "Prev %D": round(prev_d, 2),
-                    "Live %D": round(curr_d, 2),
-                    "Ref ATR": match_data["Ref ATR"],
-                    "Max Body": match_data["Max Body"]
-                })
+            res = evaluate_30m_setup(df_30m)
+            if res:
+                res["stock"] = symbol
+                matches.append(res)
 
-        except Exception:
-            continue
+        except Exception as e:
+            print(f"⚠️ Error scanning {symbol}: {e}", flush=True)
 
-    if results:
-        res_df = pd.DataFrame(results).sort_values(by="Stock", ascending=True).reset_index(drop=True)
-        print("\n🎯 Matches found! Sending email notification...")
-        print(tabulate(res_df, headers="keys", tablefmt="psql", showindex=False))
-        send_email_alert(res_df, now_ist_str)
+    if matches:
+        send_email_alert(matches)
     else:
-        print("\nNo setups matched the 30m ATR Correction strategy.")
+        print("ℹ️ No 30m setups matched on this bar.")
 
 if __name__ == "__main__":
-    run_definedge_30m_scan()
+    run_scan()
