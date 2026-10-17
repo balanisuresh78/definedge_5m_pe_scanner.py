@@ -1,9 +1,7 @@
-name: Definedge 77m FUT Scanner
+name: Definedge 77m 5-Bar FUT Scanner
 
 on:
   schedule:
-    # Pre-shifted early trigger (01:30 UTC / 07:00 IST) to offset GitHub's cron backlog so the background script wakes up early
-    - cron: '30 1 * * 1-5'
     # Bar 1 Close (09:15 - 10:32) -> Runs at 10:33 IST / 05:03 UTC
     - cron: '3 5 * * 1-5'
     # Bar 2 Close (10:32 - 11:49) -> Runs at 11:50 IST / 06:20 UTC
@@ -12,19 +10,18 @@ on:
     - cron: '37 7 * * 1-5'
     # Bar 4 Close (13:06 - 14:23) -> Runs at 14:24 IST / 08:54 UTC
     - cron: '54 8 * * 1-5'
-    # Bar 5 Close (14:23 - 15:40) -> Runs at 15:41 IST / 10:11 UTC
-    - cron: '11 10 * * 1-5'
+    # Bar 5 Close (14:23 - 15:40) -> Runs at 15:44 IST / 10:14 UTC (staggered 4 mins after 30m stop)
+    - cron: '14 10 * * 1-5'
   workflow_dispatch:
 
-# Prevents duplicate runs from overlapping if a background timer is active
 concurrency:
   group: definedge-77m-intraday-scanner
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run-77m-fut-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -37,16 +34,12 @@ jobs:
       - name: Install Dependencies
         run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
 
-      - name: Run 77m Definedge Scanner
+      - name: Run 77m 5-Bar Definedge Scanner
         env:
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-        run: |
-          if [ -f "definedge_77m_fut_scanner.py" ]; then
-            python definedge_77m_fut_scanner.py
-          elif [ -f "definedge_129m_fut_scanner.py" ]; then
-            python definedge_129m_fut_scanner.py
-          else
-            echo "Error: Scanner python file not found!"
-            exit 1
-          fi
+          DEFINEDGE_API_TOKEN: ${{ secrets.DEFINEDGE_API_TOKEN }}
+          DEFINEDGE_API_SECRET: ${{ secrets.DEFINEDGE_API_SECRET }}
+          DEFINEDGE_TOTP_SECRET: ${{ secrets.DEFINEDGE_TOTP_SECRET }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+        run: python definedge_77m_fut_scanner.py
