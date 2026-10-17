@@ -15,15 +15,15 @@ from tabulate import tabulate
 from integrate import ConnectToIntegrate, IntegrateData
 
 # ==============================================================================
-# 1. CREDENTIALS & CONFIGURATION
+# 1. CREDENTIALS & CONFIGURATION (Copy from your working 129m script)
 # ==============================================================================
-API_TOKEN = os.environ.get("DEFINEDGE_API_TOKEN", "YOUR_API_TOKEN")
-API_SECRET = os.environ.get("DEFINEDGE_API_SECRET", "YOUR_API_SECRET")
-TOTP_SECRET = os.environ.get("DEFINEDGE_TOTP_SECRET", "YOUR_TOTP_SECRET")
+API_TOKEN = (os.environ.get("DEFINEDGE_API_TOKEN") or "7eb93aac-c746-44bd-9755-18ae6289fdfc").strip()
+API_SECRET = (os.environ.get("DEFINEDGE_API_SECRET") or "snToBptj6e2X/c9c7POM8Q==").strip()
+TOTP_SECRET = (os.environ.get("DEFINEDGE_TOTP_SECRET") or "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR").strip()
 
-SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "your_email@gmail.com")
-RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "your_email@gmail.com")
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "YOUR_GMAIL_APP_PASSWORD")
+SENDER_EMAIL = (os.environ.get("SENDER_EMAIL") or "balanisuresh@gmail.com").strip()
+RECEIVER_EMAIL = (os.environ.get("RECEIVER_EMAIL") or balanisuresh@gmail.com.strip()
+APP_PASSWORD = (os.environ.get("APP_PASSWORD") or "YOUR_GMAIL_APP_PASSWORD").strip()
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -35,52 +35,83 @@ CONSEC_BARS = 5
 LOOKBACK_DAYS = 75
 
 # ==============================================================================
-# 2. DEFINEDGE LOGIN & MASTER SYMBOL FETCH
+# 2. DEFINEDGE LOGIN & MASTER SYMBOL FETCH (FIXED COLUMN 5 / SYMBOLS PARSER)
 # ==============================================================================
 def login_definedge():
     conn = ConnectToIntegrate()
     totp = pyotp.TOTP(TOTP_SECRET).now()
     conn.login(api_token=API_TOKEN, api_secret=API_SECRET, totp=totp)
-    return IntegrateData(conn)
+    return conn, IntegrateData(conn)
 
-def get_current_month_nfo_futures():
-    url = "https://app.definedgesecurities.com/public/allmaster.zip"
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
+def parse_expiry_date(val):
+    if pd.isna(val):
+        return None
+    s = str(val).strip()
+    for fmt in ("%d%m%Y", "%Y-%m-%d", "%d-%b-%Y", "%d%b%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
 
-    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-        csv_name = z.namelist()[0]
-        with z.open(csv_name) as f:
-            df = pd.read_csv(f, header=None, low_memory=False)
+def get_current_month_nfo_futures(conn=None):
+    today = datetime.now(IST).date()
+    records = []
 
-    # Filter NFO Stock Futures (FUTSTK)
-    nfo = df[(df[0] == "NFO") & (df[4] == "FUTSTK")].copy()
-    nfo["expiry"] = pd.to_datetime(nfo[8], format="%d%m%Y", errors="coerce")
-    today = pd.Timestamp(datetime.now(IST).date())
-    nfo = nfo[nfo["expiry"] >= today]
+    # Method 1: Use pyintegrate's built-in conn.symbols if available
+    if conn is not None and hasattr(conn, "symbols") and conn.symbols:
+        for sym in conn.symbols:
+            if sym.get("segment") == "NFO" and sym.get("instrument_type") == "FUTSTK":
+                exp_date = parse_expiry_date(sym.get("expiry"))
+                if exp_date and exp_date >= today:
+                    records.append({
+                        "underlying": str(sym.get("symbol", "")).strip(),
+                        "trading_symbol": str(sym.get("trading_symbol", "")).strip(),
+                        "token": str(sym.get("token", "")).strip(),
+                        "expiry": exp_date
+                    })
 
-    # Pick nearest expiry per underlying symbol
-    nfo = nfo.sort_values("expiry").groupby(2, as_index=False).first()
-    nfo = nfo.sort_values(2).reset_index(drop=True)
+    # Method 2: Fallback to allmaster.zip (Column 5 is Expiry in DDMMYYYY)
+    if not records:
+        url = "https://app.definedgesecurities.com/public/allmaster.zip"
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
 
-    futures_list = []
-    for _, row in nfo.iterrows():
-        futures_list.append({
-            "underlying": str(row[2]).strip(),
-            "trading_symbol": str(row[3]).strip(),
-            "token": str(row[1]).strip()
-        })
-    return futures_list
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            csv_name = z.namelist()[0]
+            with z.open(csv_name) as f:
+                df = pd.read_csv(f, header=None, dtype=str, low_memory=False)
+
+        nfo = df[(df[0] == "NFO") & (df[4] == "FUTSTK")].copy()
+        # In Definedge allmaster.zip, Column 5 is DDMMYYYY expiry
+        for exp_col in [5, 8, 6, 7]:
+            if exp_col in nfo.columns:
+                parsed = pd.to_datetime(nfo[exp_col], format="%d%m%Y", errors="coerce")
+                if parsed.notna().sum() > 0:
+                    nfo["expiry"] = parsed.dt.date
+                    break
+
+        nfo = nfo[nfo["expiry"].notna() & (nfo["expiry"] >= today)]
+        for _, row in nfo.iterrows():
+            records.append({
+                "underlying": str(row[2]).strip(),
+                "trading_symbol": str(row[3]).strip(),
+                "token": str(row[1]).strip(),
+                "expiry": row["expiry"]
+            })
+
+    if not records:
+        return []
+
+    df_fut = pd.DataFrame(records)
+    # Pick nearest expiry per underlying stock
+    df_fut = df_fut.sort_values("expiry").groupby("underlying", as_index=False).first()
+    df_fut = df_fut.sort_values("underlying").reset_index(drop=True)
+    return df_fut.to_dict("records")
 
 # ==============================================================================
 # 3. 77-MINUTE RESAMPLING & 5-BAR COMPRESSION LOGIC
 # ==============================================================================
-# Exact 77m bar boundaries across the 09:15 - 15:40 NFO session:
-# Bar 1: 09:15 - 10:32
-# Bar 2: 10:32 - 11:49
-# Bar 3: 11:49 - 13:06
-# Bar 4: 13:06 - 14:23
-# Bar 5: 14:23 - 15:40
 BAR_CLOSURE_TIMES = [
     (dtime(9, 15), dtime(10, 32)),
     (dtime(10, 32), dtime(11, 49)),
@@ -90,7 +121,6 @@ BAR_CLOSURE_TIMES = [
 ]
 
 def get_latest_completed_bar_start(now_ist):
-    """Returns the start time of the most recently completed 77m bar today."""
     current_t = now_ist.time()
     completed_start = None
     for start_t, end_t in BAR_CLOSURE_TIMES:
@@ -99,7 +129,6 @@ def get_latest_completed_bar_start(now_ist):
     return completed_start
 
 def resample_to_77m(df_1m, now_ist):
-    """Resamples 1-minute NFO data into exact 77-minute session bars anchored at 09:15."""
     df = df_1m.copy()
     df = df.between_time("09:15", "15:40")
     if df.empty:
@@ -121,7 +150,6 @@ def resample_to_77m(df_1m, now_ist):
             "volume": "sum"
         }).dropna(subset=["open", "close"])
 
-        # Keep only the 5 valid session bars starting at or before 14:23
         bars = bars[bars.index.time <= dtime(14, 23)]
         resampled_chunks.append(bars)
 
@@ -130,16 +158,16 @@ def resample_to_77m(df_1m, now_ist):
 
     df_77m = pd.concat(resampled_chunks).sort_index()
 
-    # Drop any currently forming (incomplete) bar from today
+    # On weekdays during market hours, drop any currently forming bar from today
     today_date = now_ist.date()
     latest_completed_start = get_latest_completed_bar_start(now_ist)
 
-    if latest_completed_start is None:
-        # Before 10:32 AM today -> evaluate up to previous trading day's final bar
-        df_77m = df_77m[df_77m.index.date < today_date]
-    else:
-        cutoff_dt = IST.localize(datetime.combine(today_date, latest_completed_start))
-        df_77m = df_77m[df_77m.index <= cutoff_dt]
+    if (df_77m.index.date == today_date).any():
+        if latest_completed_start is None:
+            df_77m = df_77m[df_77m.index.date < today_date]
+        else:
+            cutoff_dt = IST.localize(datetime.combine(today_date, latest_completed_start))
+            df_77m = df_77m[df_77m.index <= cutoff_dt]
 
     return df_77m
 
@@ -154,7 +182,6 @@ def calculate_wilder_atr(df, period=100):
         (low - prev_close).abs()
     ], axis=1).max(axis=1)
 
-    # Wilder's RMA (alpha = 1 / period)
     return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
 
 def evaluate_5bar_compression(df_77m):
@@ -175,8 +202,6 @@ def evaluate_5bar_compression(df_77m):
         return None
 
     # Condition 2: 5 Consecutive Closes (Bullish rising or Bearish falling)
-    # closes[0] is bar[-6] (reference close prior to the 5-bar sequence)
-    # closes[1..5] are the 5 consecutive compression bars
     closes = df["close"].iloc[-(CONSEC_BARS + 1):].values
     is_bull = all(closes[i] > closes[i - 1] for i in range(1, CONSEC_BARS + 1))
     is_bear = all(closes[i] < closes[i - 1] for i in range(1, CONSEC_BARS + 1))
@@ -249,7 +274,7 @@ def send_email_alert(matches, evaluated_bar_str):
     msg["Subject"] = subject
     msg.attach(MIMEText("\n".join(body_lines), "plain"))
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
         server.login(SENDER_EMAIL, APP_PASSWORD)
         server.send_message(msg)
 
@@ -260,12 +285,24 @@ def send_email_alert(matches, evaluated_bar_str):
 # ==============================================================================
 def run_single_scan():
     now_ist = datetime.now(IST)
+    current_t = now_ist.time()
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
+
+    # Prevent delayed cron runs after 16:00 IST from locking the runner
+    if event_name == "schedule" and (current_t < dtime(10, 25) or current_t > dtime(16, 0)):
+        print(f"⏹️ Outside 77m market scan window ({now_ist.strftime('%H:%M:%S IST')}). Exiting to free runner.")
+        sys.exit(0)
+
     print(f"\n🚀 Starting 77m Futures 5-Bar Compression Scan at {now_ist.strftime('%Y-%m-%d %H:%M:%S IST')}")
 
-    ic = login_definedge()
-    futures = get_current_month_nfo_futures()
+    conn, ic = login_definedge()
+    futures = get_current_month_nfo_futures(conn)
     total = len(futures)
     print(f"Loaded {total} NFO Stock Futures.")
+
+    if total == 0:
+        print("⚠️ No NFO Stock Futures found! Exiting without sending blank email.")
+        sys.exit(1)
 
     start_dt = (now_ist - timedelta(days=LOOKBACK_DAYS)).replace(hour=9, minute=15, second=0, microsecond=0)
     matches = []
