@@ -1,33 +1,44 @@
-name: Definedge Daily Divergence Scanner
+name: Definedge Daily 3-Bar FUT Scanner
 
 on:
   schedule:
-    # Runs at 15:41 IST / 10:11 UTC (After CAS and F&O market close)
-    - cron: '11 10 * * 1-5'
+    # Runs once daily after market close at 15:48 IST (10:18 UTC), Mon-Fri
+    - cron: '18 10 * * 1-5'
   workflow_dispatch:
 
+concurrency:
+  group: definedge-daily-scanner
+  cancel-in-progress: true
+
 jobs:
-  run-daily-div-scan:
+  run-daily-fut-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@main
+        uses: actions/checkout@v4
 
       - name: Set Up Python 3.11
-        uses: actions/setup-python@main
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install Dependencies
         run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
 
-      - name: Run Daily Divergence Scanner
+      - name: Run Daily 3-Bar Definedge Scanner
         env:
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ -f "definedge_daily_div_scanner.py" ]; then
-            python definedge_daily_div_scanner.py
+          if [ -f "definedge_daily_fut_scanner.py" ]; then
+            python definedge_daily_fut_scanner.py
           else
-            echo "Error: definedge_daily_div_scanner.py not found!"
-            exit 1
+            SCRIPT=$(ls *daily*.py 2>/dev/null | head -n 1)
+            if [ -n "$SCRIPT" ]; then
+              python "$SCRIPT"
+            else
+              echo "Error: Daily scanner python file not found!"
+              exit 1
+            fi
           fi
