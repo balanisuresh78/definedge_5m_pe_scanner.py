@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 import zipfile
 import io
 import smtplib
@@ -28,16 +27,12 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD", "YOUR_GMAIL_APP_PASSWORD")
 
 IST = pytz.timezone("Asia/Kolkata")
 
-# 77-Minute Strategy Parameters (385-min session 09:15-15:40 = 5 exact bars/day)
+# 77-Minute 5-Bar Compression Parameters (09:15-15:40 = 385 mins = 5 bars/day)
 TIMEFRAME_MIN = 77
 ATR_PERIOD = 100
 BODY_ATR_MULT = 0.67
-CONSEC_BARS = 4
+CONSEC_BARS = 5
 LOOKBACK_DAYS = 75
-
-# Keep False so this workflow finishes in ~3 mins and frees the GitHub runner
-# for your 30m and Daily scanners!
-HOLD_RUNNER_LOOP = False
 
 # ==============================================================================
 # 2. DEFINEDGE LOGIN & MASTER SYMBOL FETCH
@@ -78,9 +73,9 @@ def get_current_month_nfo_futures():
     return futures_list
 
 # ==============================================================================
-# 3. 77-MINUTE RESAMPLING & 4-BAR COMPRESSION LOGIC
+# 3. 77-MINUTE RESAMPLING & 5-BAR COMPRESSION LOGIC
 # ==============================================================================
-# Exact 77m bar start times across the 09:15 - 15:40 NFO session:
+# Exact 77m bar boundaries across the 09:15 - 15:40 NFO session:
 # Bar 1: 09:15 - 10:32
 # Bar 2: 10:32 - 11:49
 # Bar 3: 11:49 - 13:06
@@ -95,7 +90,7 @@ BAR_CLOSURE_TIMES = [
 ]
 
 def get_latest_completed_bar_start(now_ist):
-    """Returns the start time of the most recently completed 77m bar."""
+    """Returns the start time of the most recently completed 77m bar today."""
     current_t = now_ist.time()
     completed_start = None
     for start_t, end_t in BAR_CLOSURE_TIMES:
@@ -104,13 +99,12 @@ def get_latest_completed_bar_start(now_ist):
     return completed_start
 
 def resample_to_77m(df_1m, now_ist):
-    """Resamples 1-minute NFO data into exact 77-minute session bars (09:15 origin)."""
+    """Resamples 1-minute NFO data into exact 77-minute session bars anchored at 09:15."""
     df = df_1m.copy()
     df = df.between_time("09:15", "15:40")
     if df.empty:
         return pd.DataFrame()
 
-    # Group by trading date and resample anchored at 09:15
     resampled_chunks = []
     for trade_date, group in df.groupby(df.index.date):
         bars = group.resample(
@@ -141,7 +135,7 @@ def resample_to_77m(df_1m, now_ist):
     latest_completed_start = get_latest_completed_bar_start(now_ist)
 
     if latest_completed_start is None:
-        # Before 10:32 AM today -> only evaluate up to previous trading day
+        # Before 10:32 AM today -> evaluate up to previous trading day's final bar
         df_77m = df_77m[df_77m.index.date < today_date]
     else:
         cutoff_dt = IST.localize(datetime.combine(today_date, latest_completed_start))
@@ -161,10 +155,9 @@ def calculate_wilder_atr(df, period=100):
     ], axis=1).max(axis=1)
 
     # Wilder's RMA (alpha = 1 / period)
-    atr = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
-    return atr
+    return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
 
-def evaluate_4bar_compression(df_77m):
+def evaluate_5bar_compression(df_77m):
     if len(df_77m) < ATR_PERIOD + CONSEC_BARS + 2:
         return None
 
@@ -173,35 +166,36 @@ def evaluate_4bar_compression(df_77m):
     df["atr"] = calculate_wilder_atr(df, ATR_PERIOD)
     df["max_allowed_body"] = BODY_ATR_MULT * df["atr"]
 
-    last4 = df.iloc[-CONSEC_BARS:]
-    if last4["atr"].isna().any():
+    last5 = df.iloc[-CONSEC_BARS:]
+    if last5["atr"].isna().any():
         return None
 
-    # Condition 1: All 4 bars must have body < 0.67 * ATR(100)
-    if not (last4["body"] < last4["max_allowed_body"]).all():
+    # Condition 1: All 5 bars must have body < 0.67 * ATR(100)
+    if not (last5["body"] < last5["max_allowed_body"]).all():
         return None
 
-    # Condition 2: 4 Consecutive Closes (Bullish rising or Bearish falling)
+    # Condition 2: 5 Consecutive Closes (Bullish rising or Bearish falling)
+    # closes[0] is bar[-6] (reference close prior to the 5-bar sequence)
+    # closes[1..5] are the 5 consecutive compression bars
     closes = df["close"].iloc[-(CONSEC_BARS + 1):].values
-    # closes[0] is bar[-5], closes[1..4] are the 4 compression bars
     is_bull = all(closes[i] > closes[i - 1] for i in range(1, CONSEC_BARS + 1))
     is_bear = all(closes[i] < closes[i - 1] for i in range(1, CONSEC_BARS + 1))
 
     if not (is_bull or is_bear):
         return None
 
-    last_bar = last4.iloc[-1]
+    last_bar = last5.iloc[-1]
     prev_bar = df.iloc[-(CONSEC_BARS + 1)]
     roc_pct = ((last_bar["close"] - prev_bar["close"]) / prev_bar["close"]) * 100.0
-    max_body_ratio = (last4["body"] / last4["atr"]).max()
+    max_body_ratio = (last5["body"] / last5["atr"]).max()
 
     return {
-        "signal": "BULL (4 Up Closes)" if is_bull else "BEAR (4 Down Closes)",
+        "signal": "BULL (5 Up Closes)" if is_bull else "BEAR (5 Down Closes)",
         "group": "BUY" if is_bull else "SELL",
-        "bar_time": last4.index[-1].strftime("%d-%b %H:%M"),
+        "bar_time": last5.index[-1].strftime("%d-%b %H:%M"),
         "close": round(float(last_bar["close"]), 2),
         "atr": round(float(last_bar["atr"]), 2),
-        "max_body": round(float(last4["body"].max()), 2),
+        "max_body": round(float(last5["body"].max()), 2),
         "body_atr_ratio": round(float(max_body_ratio), 2),
         "roc_pct": round(float(roc_pct), 2)
     }
@@ -211,7 +205,7 @@ def evaluate_4bar_compression(df_77m):
 # ==============================================================================
 def send_email_alert(matches, evaluated_bar_str):
     now_str = datetime.now(IST).strftime("%d-%b %H:%M:%S")
-    subject = f"🎯 77m 4-Bar Alert [{evaluated_bar_str}] ({len(matches)} Matches) - ({now_str})"
+    subject = f"🎯 77m 5-Bar Alert [{evaluated_bar_str}] ({len(matches)} Matches) - ({now_str})"
 
     buy_matches = sorted([m for m in matches if m["group"] == "BUY"], key=lambda x: x["roc_pct"], reverse=True)
     sell_matches = sorted([m for m in matches if m["group"] == "SELL"], key=lambda x: x["roc_pct"])
@@ -222,7 +216,7 @@ def send_email_alert(matches, evaluated_bar_str):
     sell_all = ", ".join([m["stock"] for m in sell_matches]) or "None"
 
     body_lines = [
-        f"Futures 77-Min (4-Bar) Compression Scan at {now_str}",
+        f"Futures 77-Min (5-Bar) Compression Scan at {now_str}",
         f"Completed Bar Evaluated: {evaluated_bar_str}\n",
         f"📋 BUY GROUP - Top 5 (Copy & Paste into Zone):\n{buy_top5}\n",
         f"📋 SELL GROUP - Top 5 (Copy & Paste into Zone):\n{sell_top5}\n",
@@ -244,10 +238,10 @@ def send_email_alert(matches, evaluated_bar_str):
             ]
             for m in (buy_matches + sell_matches)
         ]
-        headers = ["Stock", "Setup", "Bar Start", "Close", "ATR(100)", "Max4Body", "Body/ATR", "4-Bar ROC%"]
+        headers = ["Stock", "Setup", "Bar Start", "Close", "ATR(100)", "Max5Body", "Body/ATR", "5-Bar ROC%"]
         body_lines.append(tabulate(table_rows, headers=headers, tablefmt="grid"))
     else:
-        body_lines.append("No stocks matched the 77m 4-bar compression criteria on this bar.")
+        body_lines.append("No stocks matched the 77m 5-bar compression criteria on this bar.")
 
     msg = MIMEMultipart()
     msg["From"] = SENDER_EMAIL
@@ -266,7 +260,7 @@ def send_email_alert(matches, evaluated_bar_str):
 # ==============================================================================
 def run_single_scan():
     now_ist = datetime.now(IST)
-    print(f"\n🚀 Starting 77m Futures 4-Bar Compression Scan at {now_ist.strftime('%Y-%m-%d %H:%M:%S IST')}")
+    print(f"\n🚀 Starting 77m Futures 5-Bar Compression Scan at {now_ist.strftime('%Y-%m-%d %H:%M:%S IST')}")
 
     ic = login_definedge()
     futures = get_current_month_nfo_futures()
@@ -310,7 +304,7 @@ def run_single_scan():
                 continue
 
             evaluated_bar_str = df_77m.index[-1].strftime("%d-%b %H:%M")
-            res = evaluate_4bar_compression(df_77m)
+            res = evaluate_5bar_compression(df_77m)
             if res:
                 res["stock"] = symbol
                 matches.append(res)
