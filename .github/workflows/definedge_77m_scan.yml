@@ -1,25 +1,29 @@
-name: Definedge 77m 5-Bar FUT Scanner
+name: Definedge 77m Compression + 15m ST Sniper
 
 on:
   schedule:
-    # Bar 1 Close (09:15 - 10:32) -> Runs at 10:33 IST / 05:03 UTC
+    # 15-Minute Sniper Triggers (staggered 2 mins after 15m bar closes to avoid 30m scanner collisions)
+    # Covers 09:32, 09:47, 10:02, 10:17 ... up to 15:32 IST
+    - cron: '2,17,32,47 4-9 * * 1-5'
+    - cron: '2 10 * * 1-5'
+    # Exact 77-Minute Harvester Triggers (10:33, 11:50, 13:07, 14:24, 15:44 IST)
     - cron: '3 5 * * 1-5'
-    # Bar 2 Close (10:32 - 11:49) -> Runs at 11:50 IST / 06:20 UTC
     - cron: '20 6 * * 1-5'
-    # Bar 3 Close (11:49 - 13:06) -> Runs at 13:07 IST / 07:37 UTC
     - cron: '37 7 * * 1-5'
-    # Bar 4 Close (13:06 - 14:23) -> Runs at 14:24 IST / 08:54 UTC
     - cron: '54 8 * * 1-5'
-    # Bar 5 Close (14:23 - 15:40) -> Runs at 15:44 IST / 10:14 UTC (staggered 4 mins after 30m stop)
     - cron: '14 10 * * 1-5'
   workflow_dispatch:
+
+# Allows GitHub Actions to auto-create and update 77m_memory.json in your repo
+permissions:
+  contents: write
 
 concurrency:
   group: definedge-77m-intraday-scanner
   cancel-in-progress: true
 
 jobs:
-  run-77m-fut-scan:
+  run-77m-st-sniper:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -34,8 +38,23 @@ jobs:
       - name: Install Dependencies
         run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
 
-      - name: Run 77m 5-Bar Definedge Scanner
+      - name: Run 77m Harvester & 15m ST(10,2) Sniper
         env:
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: python definedge_77m_fut_scanner.py
+
+      - name: Save Updated 77m_memory.json to Repository
+        run: |
+          if [ -f "77m_memory.json" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add 77m_memory.json
+            if ! git diff --staged --quiet; then
+              git commit -m "Auto-update 77m_memory.json [skip ci]"
+              git pull --rebase origin "${GITHUB_REF_NAME}" || true
+              git push origin HEAD:"${GITHUB_REF_NAME}"
+            else
+              echo "No changes to 77m_memory.json."
+            fi
+          fi
