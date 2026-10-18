@@ -1,0 +1,33 @@
+{
+  "last_harvested_77m_bar": "2026-10-16 14:23",
+  "stocks": {
+    "BHARATFORG": {
+      "added_trade_date": "2026-10-16",
+      "atr": 19.98,
+      "bar_time": "16-Oct 14:23",
+      "body_atr_ratio": 0.55,
+      "close": 1832.0,
+      "comp_bar_close_iso": "2026-10-16 15:40:00",
+      "group": "BUY",
+      "max_body": 11.2,
+      "roc_pct": -1.01,
+      "signal": "BULL (5 Down Closes)",
+      "stock": "BHARATFORG",
+      "trading_symbol": "BHARATFORG27OCT26F"
+    },
+    "UPL": {
+      "added_trade_date": "2026-10-16",
+      "atr": 7.54,
+      "bar_time": "16-Oct 14:23",
+      "body_atr_ratio": 0.55,
+      "close": 533.7,
+      "comp_bar_close_iso": "2026-10-16 15:40:00",
+      "group": "BUY",
+      "max_body": 4.2,
+      "roc_pct": -1.87,
+      "signal": "BULL (5 Down Closes)",
+      "stock": "UPL",
+      "trading_symbol": "UPL27OCT26F"
+    }
+  }
+}
