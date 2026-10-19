@@ -1,419 +1,609 @@
 import os
-import time
+import sys
+import json
+import zipfile
+import io
 import smtplib
-from email.message import EmailMessage
-from datetime import datetime, timedelta, time as dt_time
-import pytz
 import pyotp
+import requests
+import pytz
 import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta, time as dtime
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from tabulate import tabulate
 from integrate import ConnectToIntegrate, IntegrateData
-import warnings
 
-warnings.simplefilter(action='ignore', category=FutureWarning)
+# ==============================================================================
+# 1. CREDENTIALS & CONFIGURATION
+# ==============================================================================
+API_TOKEN = os.environ.get("DEFINEDGE_API_TOKEN", "7eb93aac-c746-44bd-9755-18ae6289fdfc").strip()
+API_SECRET = os.environ.get("DEFINEDGE_API_SECRET", "snToBptj6e2X/c9c7POM8Q==").strip()
+TOTP_SECRET = os.environ.get("DEFINEDGE_TOTP_SECRET", "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR").strip()
 
-# ==========================================
-# 1. CONFIGURATION
-# ==========================================
-API_TOKEN = "7eb93aac-c746-44bd-9755-18ae6289fdfc"
-API_SECRET = "snToBptj6e2X/c9c7POM8Q=="
-TOTP_SECRET = "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR"
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "balanisuresh@gmail.com").strip()
+RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "balanisuresh@gmail.com").strip()
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "YOUR_GMAIL_APP_PASSWORD").strip()
 
-SENDER_EMAIL = "balanisuresh@gmail.com"
-RECEIVER_EMAIL = "balanisuresh@gmail.com"
-APP_PASSWORD = os.environ.get("APP_PASSWORD")
+IST = pytz.timezone("Asia/Kolkata")
+MEMORY_FILE = "129m_memory.json"
 
-# Strategy Parameters (129-Min Timeframe, 4-Bar Compression)
-TIMEFRAME_MINS = 129
-ATR_PERIOD = 100
+# Stage 1: 129-Minute 4-Bar Compression Parameters
+TIMEFRAME_129M = 129
+ATR_PERIOD_129M = 100
 BODY_ATR_MULT = 0.67
-HIST_LOOKBACK_DAYS = 75  # ~50 trading days = ~150 bars of 129-min candles
+CONSEC_BARS = 4
+LOOKBACK_DAYS_129M = 95
 
-# Exact IST Bar-Close Scan Targets (15 seconds after each bar closes)
-SCAN_TARGETS_IST = [
-    dt_time(11, 24, 15),  # Candle 1 Close (09:15 - 11:24)
-    dt_time(13, 33, 15),  # Candle 2 Close (11:24 - 13:33)
-    dt_time(15, 40, 15),  # Candle 3 Close (13:33 - 15:40)
-]
+# Stage 2: 15-Minute SuperTrend (10, 2) Parameters
+TIMEFRAME_15M = 15
+ST_PERIOD = 10
+ST_MULTIPLIER = 2.0
+LOOKBACK_DAYS_15M = 15
 
-fno_stocks = [
-    '360ONE', 'ABB', 'ABCAPITAL', 'ADANIENSOL', 'ADANIENT', 'ADANIGREEN', 'ADANIPORTS', 
-    'ADANIPOWER', 'ALKEM', 'AMBER', 'AMBUJACEM', 'ANGELONE', 'APLAPOLLO', 'APOLLOHOSP', 
-    'ASHOKLEY', 'ASIANPAINT', 'ASTRAL', 'ATHERENERG', 'AUBANK', 'AUROPHARMA', 'AXISBANK', 
-    'BAJAJ-AUTO', 'BAJAJFINSV', 'BAJAJHLDNG', 'BAJFINANCE', 'BANDHANBNK', 'BANKBARODA', 
-    'BANKINDIA', 'BDL', 'BEL', 'BHARATFORG', 'BHARTIARTL', 'BHEL', 'BIOCON', 
-    'BLUESTARCO', 'BOSCHLTD', 'BPCL', 'BRITANNIA', 'BSE', 'CAMS', 'CANBK', 'CDSL', 
-    'CGPOWER', 'CHOLAFIN', 'CIPLA', 'COALINDIA', 'COCHINSHIP', 'COFORGE', 'COLPAL', 
-    'CONCOR', 'CROMPTON', 'CUMMINSIND', 'DABUR', 'DELHIVERY', 'DIVISLAB', 'DIXON', 
-    'DLF', 'DMART', 'DRREDDY', 'EICHERMOT', 'ETERNAL', 'FEDERALBNK', 'FORCEMOT', 'FORTIS', 
-    'GAIL', 'GLENMARK', 'GMRAIRPORT', 'GODFRYPHLP', 'GODREJCP', 'GODREJPROP', 'GRASIM', 
-    'GVT&D', 'HAL', 'HAVELLS', 'HCLTECH', 'HDFCAMC', 'HDFCBANK', 'HDFCLIFE', 'HEROMOTOCO', 
-    'HINDALCO', 'HINDPETRO', 'HINDUNILVR', 'HINDZINC', 'HYUNDAI', 'ICICIBANK', 'ICICIGI', 
-    'ICICIPRULI', 'IDEA', 'IDFCFIRSTB', 'IEX', 'INDHOTEL', 'INDIANB', 'INDIGO', 
-    'INDUSINDBK', 'INDUSTOWER', 'INFY', 'INOXWIND', 'IOC', 'IREDA', 'IRFC', 'ITC', 
-    'JINDALSTEL', 'JIOFIN', 'JSWENERGY', 'JSWSTEEL', 'JUBLFOOD', 'KALYANKJIL', 'KAYNES', 
-    'KEI', 'KFINTECH', 'KOTAKBANK', 'KPITTECH', 'LAURUSLABS', 'LICHSGFIN', 'LICI', 
-    'LODHA', 'LT', 'LTF', 'LTM', 'LUPIN', 'M&M', 'MAHABANK', 'MANAPPURAM', 'MANKIND', 
-    'MARICO', 'MARUTI', 'MAXHEALTH', 'MAZDOCK', 'MCX', 'MFSL', 'MOTHERSON', 'MOTILALOFS', 
-    'MPHASIS', 'MUTHOOTFIN', 'NAM-INDIA', 'NATIONALUM', 'NAUKRI', 'NBCC', 'NESTLEIND', 
-    'NHPC', 'NMDC', 'NTPC', 'NYKAA', 'OBEROIRLTY', 'OFSS', 'OIL', 'ONGC', 
-    'PAGEIND', 'PATANJALI', 'PAYTM', 'PERSISTENT', 'PETRONET', 'PFC', 'PGEL', 'PHOENIXLTD', 
-    'PIDILITIND', 'PIIND', 'PNB', 'PNBHOUSING', 'POLICYBZR', 'POLYCAB', 'POWERGRID', 
-    'POWERINDIA', 'PREMIERENE', 'PRESTIGE', 'RADICO', 'RBLBANK', 'RECLTD', 'RELIANCE', 
-    'RVNL', 'SAGILITY', 'SAIL', 'SBICARD', 'SBILIFE', 'SBIN', 'SHREECEM', 'SHRIRAMFIN', 
-    'SIEMENS', 'SOLARINDS', 'SONACOMS', 'SRF', 'SUNPHARMA', 'SUPREMEIND', 'SUZLON', 
-    'SWIGGY', 'TATACONSUM', 'TATAELXSI', 'TATAPOWER', 'TATASTEEL', 'TCS', 'TECHM', 
-    'TIINDIA', 'TITAN', 'TMPV', 'TORNTPHARM', 'TRENT', 'TVSMOTOR', 'ULTRACEMCO', 
-    'UNIONBANK', 'UNITDSPR', 'UNOMINDA', 'UPL', 'VBL', 'VEDL', 'VMM', 'VOLTAS', 
-    'WAAREEENER', 'WIPRO', 'YESBANK', 'ZYDUSLIFE'
-]
+# Memory Retention: Ignore current trading day (Day 0) and keep for next 2 trading days
+MAX_NEXT_TRADING_DAYS = 2
+ALLOW_SAME_DAY_15M_TRIGGER = True
 
-# ==========================================
-# 2. HELPER & CALCULATION FUNCTIONS
-# ==========================================
-def parse_expiry_date(exp_str):
-    if not exp_str:
+# ==============================================================================
+# 2. PERSISTENT MEMORY MANAGEMENT (129m_memory.json)
+# ==============================================================================
+def load_memory():
+    if not os.path.exists(MEMORY_FILE):
+        return {"last_harvested_129m_bar": "", "stocks": {}}
+    try:
+        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if "stocks" not in data:
+                data = {"last_harvested_129m_bar": "", "stocks": {}}
+            return data
+    except Exception as e:
+        print(f"⚠️ Could not read {MEMORY_FILE}, starting fresh: {e}")
+        return {"last_harvested_129m_bar": "", "stocks": {}}
+
+def save_memory(memory_data):
+    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(memory_data, f, indent=2, sort_keys=True)
+    print(f"💾 Memory saved to {MEMORY_FILE} ({len(memory_data.get('stocks', {}))} active stocks).")
+
+# ==============================================================================
+# 3. DEFINEDGE LOGIN & MASTER SYMBOL FETCH
+# ==============================================================================
+def login_definedge():
+    conn = ConnectToIntegrate()
+    totp = pyotp.TOTP(TOTP_SECRET).now()
+    conn.login(api_token=API_TOKEN, api_secret=API_SECRET, totp=totp)
+    return conn, IntegrateData(conn)
+
+def parse_expiry_date(val):
+    if pd.isna(val):
         return None
-    exp_str = str(exp_str).strip()
-    for fmt in ("%d%m%Y", "%Y-%m-%d", "%d-%b-%Y", "%d%b%Y"):
+    s = str(val).strip()
+    for fmt in ("%d%m%Y", "%Y-%m-%d", "%d-%b-%Y", "%d%b%Y", "%d-%m-%Y"):
         try:
-            return datetime.strptime(exp_str, fmt).date()
+            return datetime.strptime(s, fmt).date()
         except ValueError:
             continue
     return None
 
-def parse_historical_to_df(hist_generator):
-    rows = []
-    for item in hist_generator:
-        if isinstance(item, dict):
-            dt_val = item.get("datetime") or item.get("date") or item.get("time")
-            o, h, l, c = item.get("open", 0), item.get("high", 0), item.get("low", 0), item.get("close", 0)
-            v = item.get("volume", 0)
-            rows.append([dt_val, float(o), float(h), float(l), float(c), float(v)])
-        elif isinstance(item, (list, tuple)) and len(item) >= 6:
-            rows.append([item[0], float(item[1]), float(item[2]), float(item[3]), float(item[4]), float(item[5])])
-        elif isinstance(item, str):
-            parts = item.strip().split(",")
-            if len(parts) >= 6:
-                rows.append([parts[0], float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4]), float(parts[5])])
+def get_current_month_nfo_futures(conn=None):
+    today = datetime.now(IST).date()
+    records = []
 
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows, columns=["Datetime", "Open", "High", "Low", "Close", "Volume"])
-    for col in ["Open", "High", "Low", "Close", "Volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    if conn is not None and hasattr(conn, "symbols") and conn.symbols:
+        for sym in conn.symbols:
+            if sym.get("segment") == "NFO" and sym.get("instrument_type") == "FUTSTK":
+                exp_date = parse_expiry_date(sym.get("expiry"))
+                if exp_date and exp_date >= today:
+                    records.append({
+                        "underlying": str(sym.get("symbol", "")).strip(),
+                        "trading_symbol": str(sym.get("trading_symbol", "")).strip(),
+                        "token": str(sym.get("token", "")).strip(),
+                        "expiry": exp_date
+                    })
 
-    if not np.issubdtype(df["Datetime"].dtype, np.datetime64):
-        df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce", dayfirst=True)
+    if not records:
+        url = "https://app.definedgesecurities.com/public/allmaster.zip"
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
 
-    df.dropna(subset=["Datetime", "Close"], inplace=True)
-    df.sort_values("Datetime", inplace=True)
-    return df.reset_index(drop=True)
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            csv_name = z.namelist()[0]
+            with z.open(csv_name) as f:
+                df = pd.read_csv(f, header=None, dtype=str, low_memory=False)
 
-def resample_to_129m(df_1m, now_ist, tf_mins=129):
-    """
-    Builds exact 129-minute candles anchored to 09:15 AM IST:
-    Bucket 0: 09:15 - 11:23 (closes at 11:24)
-    Bucket 1: 11:24 - 13:32 (closes at 13:33)
-    Bucket 2: 13:33 - 15:40 (closes at 15:40)
-    Automatically drops any currently forming (incomplete) bar for today.
-    """
-    if df_1m.empty:
-        return pd.DataFrame()
+        nfo = df[(df[0] == "NFO") & (df[4] == "FUTSTK")].copy()
+        for exp_col in [5, 8, 6, 7]:
+            if exp_col in nfo.columns:
+                parsed = pd.to_datetime(nfo[exp_col], format="%d%m%Y", errors="coerce")
+                if parsed.notna().sum() > 0:
+                    nfo["expiry"] = parsed.dt.date
+                    break
 
-    times = df_1m["Datetime"].dt.time
-    df = df_1m[(times >= dt_time(9, 15)) & (times <= dt_time(15, 40))].copy()
+        nfo = nfo[nfo["expiry"].notna() & (nfo["expiry"] >= today)]
+        for _, row in nfo.iterrows():
+            records.append({
+                "underlying": str(row[2]).strip(),
+                "trading_symbol": str(row[3]).strip(),
+                "token": str(row[1]).strip(),
+                "expiry": row["expiry"]
+            })
+
+    if not records:
+        return []
+
+    df_fut = pd.DataFrame(records)
+    df_fut = df_fut.sort_values("expiry").groupby("underlying", as_index=False).first()
+    df_fut = df_fut.sort_values("underlying").reset_index(drop=True)
+    return df_fut.to_dict("records")
+
+def fetch_1m_df(conn, ic, trading_symbol, start_dt, end_dt):
+    hist = ic.historical_data(
+        exchange=conn.EXCHANGE_TYPE_NFO,
+        trading_symbol=trading_symbol,
+        timeframe=conn.TIMEFRAME_TYPE_MIN,
+        start=start_dt,
+        end=end_dt
+    )
+    df = pd.DataFrame(list(hist))
     if df.empty:
         return pd.DataFrame()
 
-    day_open = df["Datetime"].dt.normalize() + pd.Timedelta(hours=9, minutes=15)
-    mins_from_open = ((df["Datetime"] - day_open).dt.total_seconds() // 60).astype(int)
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    if df["datetime"].dt.tz is None:
+        df["datetime"] = df["datetime"].dt.tz_localize(IST)
+    else:
+        df["datetime"] = df["datetime"].dt.tz_convert(IST)
 
-    df["TradeDate"] = df["Datetime"].dt.date
-    df["Bucket"] = (mins_from_open // tf_mins).clip(lower=0, upper=2)
+    df = df.set_index("datetime").sort_index()
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
 
-    df_tf = df.groupby(["TradeDate", "Bucket"], as_index=False).agg(
-        Datetime=("Datetime", "first"),
-        Open=("Open", "first"),
-        High=("High", "max"),
-        Low=("Low", "min"),
-        Close=("Close", "last"),
-        Volume=("Volume", "sum")
-    )
+# ==============================================================================
+# 4. STAGE 1: 129-MINUTE RESAMPLING & 4-BAR COMPRESSION LOGIC
+# ==============================================================================
+# Exact 129m bar boundaries across the 09:15 - 15:40 NFO session:
+# Bar 1: 09:15 - 11:24
+# Bar 2: 11:24 - 13:33
+# Bar 3: 13:33 - 15:40
+BAR_CLOSURE_TIMES_129M = [
+    (dtime(9, 15), dtime(11, 24)),
+    (dtime(11, 24), dtime(13, 33)),
+    (dtime(13, 33), dtime(15, 40)),
+]
 
-    # Drop any bar on today's date that has not finished closing yet
+def get_latest_completed_129m_start(now_ist):
+    current_t = now_ist.time()
+    completed_start = None
+    for start_t, end_t in BAR_CLOSURE_TIMES_129M:
+        if current_t >= end_t:
+            completed_start = start_t
+    return completed_start
+
+def resample_to_129m(df_1m, now_ist):
+    df = df_1m.copy().between_time("09:15", "15:40")
+    if df.empty:
+        return pd.DataFrame()
+
+    resampled_chunks = []
+    for _, group in df.groupby(df.index.date):
+        bars = group.resample(
+            f"{TIMEFRAME_129M}min",
+            origin="start_day",
+            offset="9h15min",
+            label="left",
+            closed="left"
+        ).agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }).dropna(subset=["open", "close"])
+
+        bars = bars[bars.index.time <= dtime(13, 33)]
+        resampled_chunks.append(bars)
+
+    if not resampled_chunks:
+        return pd.DataFrame()
+
+    df_129m = pd.concat(resampled_chunks).sort_index()
     today_date = now_ist.date()
-    curr_time = now_ist.time()
+    latest_completed_start = get_latest_completed_129m_start(now_ist)
 
-    if curr_time < dt_time(11, 24):
-        max_completed_bucket = -1
-    elif curr_time < dt_time(13, 33):
-        max_completed_bucket = 0
-    elif curr_time < dt_time(15, 30):
-        max_completed_bucket = 1
-    else:
-        max_completed_bucket = 2
+    if (df_129m.index.date == today_date).any():
+        if latest_completed_start is None:
+            df_129m = df_129m[df_129m.index.date < today_date]
+        else:
+            cutoff_dt = IST.localize(datetime.combine(today_date, latest_completed_start))
+            df_129m = df_129m[df_129m.index <= cutoff_dt]
 
-    df_tf = df_tf[
-        (df_tf["TradeDate"] < today_date) |
-        ((df_tf["TradeDate"] == today_date) & (df_tf["Bucket"] <= max_completed_bucket))
-    ].copy()
+    return df_129m
 
-    df_tf.sort_values("Datetime", inplace=True)
-    return df_tf.drop(columns=["TradeDate", "Bucket"]).reset_index(drop=True)
+def calculate_wilder_atr(df, period):
+    high = df["high"]
+    low = df["low"]
+    prev_close = df["close"].shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
 
-def calculate_atr(df, period=100):
-    high_low = df['High'] - df['Low']
-    high_close = (df['High'] - df['Close'].shift()).abs()
-    low_close = (df['Low'] - df['Close'].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(window=period).mean()
-
-# ==========================================
-# 3. STRATEGY LOGIC EVALUATOR (4-BAR 129M)
-# ==========================================
-def evaluate_4bar_setup(df, current_idx):
-    ref_atr = df.loc[current_idx, 'ATR100']
-    if pd.isna(ref_atr):
-        return False
-
-    c0 = df.loc[current_idx, 'Close']
-    c1 = df.loc[current_idx - 1, 'Close']
-    c2 = df.loc[current_idx - 2, 'Close']
-    c3 = df.loc[current_idx - 3, 'Close']
-    c4 = df.loc[current_idx - 4, 'Close']
-
-    # 4 consecutive lower closes (Bull Setup) or 4 consecutive higher closes (Bear Setup)
-    four_down = (c0 < c1) and (c1 < c2) and (c2 < c3) and (c3 < c4)
-    four_up = (c0 > c1) and (c1 > c2) and (c2 > c3) and (c3 > c4)
-
-    if not (four_down or four_up):
-        return False
-
-    # Check that ALL FOUR bars (0, -1, -2, -3) have bodies strictly < 0.67 * ATR(100)
-    bars_to_check = [current_idx, current_idx - 1, current_idx - 2, current_idx - 3]
-    max_4b_body = 0.0
-
-    for idx in bars_to_check:
-        body = abs(df.loc[idx, 'Open'] - df.loc[idx, 'Close'])
-        max_4b_body = max(max_4b_body, body)
-        if body >= (BODY_ATR_MULT * ref_atr):
-            return False
-
-    live_body = abs(df.loc[current_idx, 'Open'] - df.loc[current_idx, 'Close'])
-    ratio = round(ref_atr / live_body, 2) if live_body > 0 else 999.99
-
-    signal = "Bull Setup 🟢" if four_down else "Bear Setup 🔴"
-
-    return {
-        "Signal": signal,
-        "Ref ATR": round(ref_atr, 2),
-        "Max 4B Body": round(max_4b_body, 2),
-        "Live Body": round(live_body, 2),
-        "Ratio": ratio
-    }
-
-# ==========================================
-# 4. NOTIFICATION & SCANNER ENGINE
-# ==========================================
-def send_email_alert(results_df, timestamp, bar_label):
-    if not APP_PASSWORD:
-        print("❌ ERROR: APP_PASSWORD environment variable is empty! Check GitHub Secrets.")
-        return
-
-    msg = EmailMessage()
-    msg["From"] = SENDER_EMAIL
-    msg["To"] = RECEIVER_EMAIL
-
-    if results_df.empty:
-        msg["Subject"] = f"⚪ 129m 4-Bar Scan ({bar_label}): 0 Matches - ({timestamp})"
-        body = (
-            f"<h3>Futures 129-Min (4-Bar) Scan at {timestamp}</h3>"
-            f"<p>Evaluated Bar: <b>{bar_label}</b></p>"
-            f"<p>Scan completed across all NFO stocks, but <b>0 setups</b> matched the 4-Bar Compression criteria.</p>"
-        )
-        msg.set_content(f"Scan completed for {bar_label}. 0 setups matched.")
-        msg.add_alternative(body, subtype="html")
-    else:
-        msg["Subject"] = f"🎯 129m 4-Bar Alert [{bar_label}] ({len(results_df)} Matches) - ({timestamp})"
-
-        buy_stocks = results_df[results_df["Setup"] == "Bull Setup 🟢"]["Stock"].head(5).tolist()
-        sell_stocks = results_df[results_df["Setup"] == "Bear Setup 🔴"]["Stock"].head(5).tolist()
-
-        buy_str = ", ".join(buy_stocks) if buy_stocks else "None"
-        sell_str = ", ".join(sell_stocks) if sell_stocks else "None"
-
-        html_table = results_df.to_html(index=False, justify="center")
-        body = (
-            f"<h3>Futures 129-Min (4-Bar) Compression Scan at {timestamp}</h3>"
-            f"<p><b>Completed Bar Evaluated:</b> {bar_label}</p>"
-            f"<hr>"
-            f"<h4>📋 BUY GROUP - Top 5 (Copy & Paste into Zone):</h4>"
-            f"<div style='background-color: #f4f4f4; padding: 10px; font-family: monospace; border: 1px solid #ccc;'>{buy_str}</div>"
-            f"<h4>📋 SELL GROUP - Top 5 (Copy & Paste into Zone):</h4>"
-            f"<div style='background-color: #f4f4f4; padding: 10px; font-family: monospace; border: 1px solid #ccc;'>{sell_str}</div>"
-            f"<hr>"
-            f"<ul>"
-            f"<li><b>Timeframe:</b> 129-Minute Candles (09:15, 11:24, 13:33 IST - Close 15:40).</li>"
-            f"<li><b>Bull Setup 🟢:</b> 4 Consecutive Lower Closes (Bars 0, -1, -2, -3).</li>"
-            f"<li><b>Bear Setup 🔴:</b> 4 Consecutive Higher Closes (Bars 0, -1, -2, -3).</li>"
-            f"<li>All 4 bar bodies are strictly &lt; 0.67 * ATR(100).</li>"
-            f"<li>Sorted by Ratio (ATR / Live Body) in descending order (Smallest Live Body on top).</li>"
-            f"</ul>"
-            f"{html_table}"
-        )
-
-        msg.set_content(results_df.to_string(index=False))
-        msg.add_alternative(body, subtype="html")
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login(SENDER_EMAIL, APP_PASSWORD.replace(" ", ""))
-            smtp.send_message(msg)
-        print(f"✅ Alert email successfully sent for bar [{bar_label}]!")
-    except Exception as e:
-        print(f"❌ Failed to send email: {e}")
-
-def execute_single_scan():
-    ist_tz = pytz.timezone("Asia/Kolkata")
-    now_ist = datetime.now(ist_tz)
-    now_ist_str = now_ist.strftime("%d-%b %H:%M:%S")
-    print(f"\n[{now_ist_str}] Logging into Definedge for 129-Min (4-Bar) Scan...", flush=True)
-
-    conn = ConnectToIntegrate()
-    try:
-        current_totp = pyotp.TOTP(TOTP_SECRET.replace(" ", "")).now()
-        conn.login(api_token=API_TOKEN.strip(), api_secret=API_SECRET.strip(), totp=current_totp)
-        ic = IntegrateData(conn)
-        print("✅ Logged in! Indexing NFO Stock Futures...", flush=True)
-    except Exception as auth_err:
-        print(f"❌ Definedge Login Failed: {auth_err}", flush=True)
+def evaluate_4bar_compression(df_129m):
+    if len(df_129m) < ATR_PERIOD_129M + CONSEC_BARS + 2:
         return None
 
-    today_date_local = now_ist.date()
-    stock_set = set(fno_stocks)
-    fut_by_stock = {}
+    df = df_129m.copy()
+    df["body"] = (df["close"] - df["open"]).abs()
+    df["atr"] = calculate_wilder_atr(df, ATR_PERIOD_129M)
+    df["max_allowed_body"] = BODY_ATR_MULT * df["atr"]
 
-    for sym in conn.symbols:
-        if sym.get("segment") == conn.EXCHANGE_TYPE_NFO and sym.get("instrument_type") == "FUTSTK":
-            base_sym = sym.get("symbol")
-            if base_sym in stock_set:
-                exp_date = parse_expiry_date(sym.get("expiry"))
-                if exp_date and exp_date >= today_date_local:
-                    fut_by_stock.setdefault(base_sym, []).append((exp_date, sym))
+    last4 = df.iloc[-CONSEC_BARS:]
+    if last4["atr"].isna().any():
+        return None
 
-    results = []
-    end_time = now_ist.replace(tzinfo=None)
-    start_time = end_time - timedelta(days=HIST_LOOKBACK_DAYS)
-    latest_bar_str = "Latest Completed Bar"
+    if not (last4["body"] < last4["max_allowed_body"]).all():
+        return None
 
-    for idx, stock in enumerate(fno_stocks, 1):
-        print(f"Scanning {stock} ({idx}/{len(fno_stocks)})...", flush=True)
-        if stock not in fut_by_stock:
+    # 4 Down Closes = Bullish Pullback -> BUY Group
+    # 4 Up Closes   = Bearish Pullback -> SELL Group
+    closes = df["close"].iloc[-(CONSEC_BARS + 1):].values
+    is_bull_setup = all(closes[i] < closes[i - 1] for i in range(1, CONSEC_BARS + 1))
+    is_bear_setup = all(closes[i] > closes[i - 1] for i in range(1, CONSEC_BARS + 1))
+
+    if not (is_bull_setup or is_bear_setup):
+        return None
+
+    last_bar = last4.iloc[-1]
+    prev_bar = df.iloc[-(CONSEC_BARS + 1)]
+    roc_pct = ((last_bar["close"] - prev_bar["close"]) / prev_bar["close"]) * 100.0
+    max_body_ratio = (last4["body"] / last4["atr"]).max()
+
+    bar_start_dt = last4.index[-1]
+    if bar_start_dt.time() == dtime(13, 33):
+        bar_close_dt = bar_start_dt + timedelta(minutes=127)
+    else:
+        bar_close_dt = bar_start_dt + timedelta(minutes=TIMEFRAME_129M)
+
+    return {
+        "signal": "BULL (4 Down Closes)" if is_bull_setup else "BEAR (4 Up Closes)",
+        "group": "BUY" if is_bull_setup else "SELL",
+        "bar_time": bar_start_dt.strftime("%d-%b %H:%M"),
+        "comp_bar_close_iso": bar_close_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "last_checked_15m_iso": "",
+        "added_trade_date": bar_start_dt.strftime("%Y-%m-%d"),
+        "close": round(float(last_bar["close"]), 2),
+        "atr": round(float(last_bar["atr"]), 2),
+        "max_body": round(float(last4["body"].max()), 2),
+        "body_atr_ratio": round(float(max_body_ratio), 2),
+        "roc_pct": round(float(roc_pct), 2)
+    }
+
+# ==============================================================================
+# 5. STAGE 2: 15-MINUTE SUPERTREND (10, 2) CALCULATION & TRIGGER CHECK
+# ==============================================================================
+def resample_to_15m(df_1m, now_ist):
+    df = df_1m.copy().between_time("09:15", "15:30")
+    if df.empty:
+        return pd.DataFrame()
+
+    resampled_chunks = []
+    for _, group in df.groupby(df.index.date):
+        bars = group.resample(
+            "15min",
+            origin="start_day",
+            offset="9h15min",
+            label="left",
+            closed="left"
+        ).agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }).dropna(subset=["open", "close"])
+
+        bars = bars[bars.index.time <= dtime(15, 15)]
+        resampled_chunks.append(bars)
+
+    if not resampled_chunks:
+        return pd.DataFrame()
+
+    df_15m = pd.concat(resampled_chunks).sort_index()
+
+    today_date = now_ist.date()
+    if (df_15m.index.date == today_date).any():
+        completed_mask = [
+            (ts.date() < today_date) or (now_ist >= ts + timedelta(minutes=15))
+            for ts in df_15m.index
+        ]
+        df_15m = df_15m[completed_mask]
+
+    return df_15m
+
+def calculate_supertrend_15m(df_15m, period=10, multiplier=2.0):
+    df = df_15m.copy()
+    df["atr"] = calculate_wilder_atr(df, period)
+    hl2 = (df["high"] + df["low"]) / 2.0
+
+    basic_ub = (hl2 + multiplier * df["atr"]).values
+    basic_lb = (hl2 - multiplier * df["atr"]).values
+    close = df["close"].values
+
+    n = len(df)
+    final_ub = np.zeros(n)
+    final_lb = np.zeros(n)
+    st_dir = np.ones(n, dtype=int)  # 1 = Bullish (Green), -1 = Bearish (Red)
+    st_val = np.zeros(n)
+
+    for i in range(n):
+        if i == 0 or np.isnan(basic_ub[i]):
+            final_ub[i] = basic_ub[i]
+            final_lb[i] = basic_lb[i]
+            st_dir[i] = 1
+            st_val[i] = final_lb[i]
             continue
 
-        all_entries = fut_by_stock[stock]
-        nearest_expiry = min(exp for exp, _ in all_entries)
-        fut_contract = next(sym for exp, sym in all_entries if exp == nearest_expiry)
-        fut_tsym = fut_contract["trading_symbol"]
+        if np.isnan(final_ub[i - 1]):
+            final_ub[i] = basic_ub[i]
+            final_lb[i] = basic_lb[i]
+            st_dir[i] = 1
+            st_val[i] = final_lb[i]
+            continue
+
+        if basic_ub[i] < final_ub[i - 1] or close[i - 1] > final_ub[i - 1]:
+            final_ub[i] = basic_ub[i]
+        else:
+            final_ub[i] = final_ub[i - 1]
+
+        if basic_lb[i] > final_lb[i - 1] or close[i - 1] < final_lb[i - 1]:
+            final_lb[i] = basic_lb[i]
+        else:
+            final_lb[i] = final_lb[i - 1]
+
+        if st_dir[i - 1] == -1 and close[i] > final_ub[i - 1]:
+            st_dir[i] = 1
+        elif st_dir[i - 1] == 1 and close[i] < final_lb[i - 1]:
+            st_dir[i] = -1
+        else:
+            st_dir[i] = st_dir[i - 1]
+
+        st_val[i] = final_lb[i] if st_dir[i] == 1 else final_ub[i]
+
+    df["st_dir"] = st_dir
+    df["st_val"] = st_val
+    return df
+
+# ==============================================================================
+# 6. EMAIL ALERT (SENT ONLY WHEN 15M SUPERTREND FLIPS)
+# ==============================================================================
+def send_15m_st_email_alert(triggered_list, active_memory_count):
+    now_str = datetime.now(IST).strftime("%d-%b %H:%M:%S")
+    subject = f"🚀 15m ST(10,2) Trigger on 129m Compression ({len(triggered_list)} Matches) - ({now_str})"
+
+    buy_matches = sorted([m for m in triggered_list if m["group"] == "BUY"], key=lambda x: x["roc_pct"])
+    sell_matches = sorted([m for m in triggered_list if m["group"] == "SELL"], key=lambda x: x["roc_pct"], reverse=True)
+
+    buy_top5 = ", ".join([m["stock"] for m in buy_matches[:5]]) or "None"
+    sell_top5 = ", ".join([m["stock"] for m in sell_matches[:5]]) or "None"
+    buy_all = ", ".join([m["stock"] for m in buy_matches]) or "None"
+    sell_all = ", ".join([m["stock"] for m in sell_matches]) or "None"
+
+    body_lines = [
+        f"129m (4-Bar Compression) + 15m SuperTrend (10, 2) Breakout Alert at {now_str}",
+        f"Remaining Stocks Still Watched in 2-Day Memory: {active_memory_count}\n",
+        f"📋 BUY GROUP - Top 5 (Copy & Paste into Zone):\n{buy_top5}\n",
+        f"📋 SELL GROUP - Top 5 (Copy & Paste into Zone):\n{sell_top5}\n",
+        f"All BUY ({len(buy_matches)}): {buy_all}",
+        f"All SELL ({len(sell_matches)}): {sell_all}\n"
+    ]
+
+    table_rows = [
+        [
+            m["stock"],
+            m["signal"],
+            m["bar_time"],
+            m["st_bar_time"],
+            m["atr"],
+            m["max_body"],
+            m["live_15m_close"],
+            m["st_level"],
+            m["body_atr_ratio"]
+        ]
+        for m in (buy_matches + sell_matches)
+    ]
+    headers = [
+        "Stock", "Setup", "Bar Date", "15m ST Bar",
+        "ATR(100)", "Max 4B Body", "Live", "ST(10,2)", "BodyRatio"
+    ]
+    body_lines.append(tabulate(table_rows, headers=headers, tablefmt="grid"))
+
+    msg = MIMEMultipart()
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECEIVER_EMAIL
+    msg["Subject"] = subject
+    msg.attach(MIMEText("\n".join(body_lines), "plain"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
+        server.login(SENDER_EMAIL, APP_PASSWORD)
+        server.send_message(msg)
+
+    print(f"✅ 15m SuperTrend Alert Email sent for {len(triggered_list)} triggered stock(s)!")
+
+# ==============================================================================
+# 7. MAIN EXECUTION: HARVESTER (129m) + SNIPER (15m ST)
+# ==============================================================================
+def run_scanner():
+    now_ist = datetime.now(IST)
+    current_t = now_ist.time()
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
+
+    # Extended cutoff to 17:30 IST so GitHub cron delays after 15:40 still harvest Bar 3!
+    if event_name == "schedule" and (current_t < dtime(9, 20) or current_t > dtime(17, 30)):
+        print(f"⏹️ Outside market scan window ({now_ist.strftime('%H:%M:%S IST')}). Exiting to free runner.")
+        sys.exit(0)
+
+    memory = load_memory()
+    conn, ic = login_definedge()
+    futures = get_current_month_nfo_futures(conn)
+    fut_map = {f["underlying"]: f["trading_symbol"] for f in futures}
+
+    if not futures:
+        print("⚠️ No NFO Stock Futures loaded. Exiting.")
+        sys.exit(1)
+
+    # --------------------------------------------------------------------------
+    # PART A: CHECK IF A NEW 129m BAR CLOSED -> RUN 129m 4-BAR HARVESTER
+    # --------------------------------------------------------------------------
+    latest_129m_start = get_latest_completed_129m_start(now_ist)
+    if latest_129m_start is not None:
+        expected_129m_label = f"{now_ist.strftime('%Y-%m-%d')} {latest_129m_start.strftime('%H:%M')}"
+    else:
+        expected_129m_label = "PREV_DAY"
+
+    should_harvest = (
+        (latest_129m_start is not None and memory.get("last_harvested_129m_bar") != expected_129m_label)
+        or event_name == "workflow_dispatch"
+    )
+
+    if should_harvest:
+        print(f"\n🌾 Running 129m 4-Bar Compression Harvester (Target Bar: {expected_129m_label})...")
+        start_dt_129m = (now_ist - timedelta(days=LOOKBACK_DAYS_129M)).replace(hour=9, minute=15, second=0, microsecond=0)
+        new_added = 0
+        actual_bar_label = memory.get("last_harvested_129m_bar", "")
+
+        for idx, fut in enumerate(futures, 1):
+            symbol = fut["underlying"]
+            trd_sym = fut["trading_symbol"]
+            try:
+                df_1m = fetch_1m_df(conn, ic, trd_sym, start_dt_129m, now_ist)
+                if df_1m.empty:
+                    continue
+
+                df_129m = resample_to_129m(df_1m, now_ist)
+                if df_129m.empty:
+                    continue
+
+                actual_bar_label = df_129m.index[-1].strftime("%Y-%m-%d %H:%M")
+                res = evaluate_4bar_compression(df_129m)
+                if res:
+                    res["stock"] = symbol
+                    res["trading_symbol"] = trd_sym
+                    memory["stocks"][symbol] = res
+                    new_added += 1
+                    print(f"  ➕ Added/Updated in 129m memory: {symbol} ({res['signal']}) on bar {res['bar_time']}")
+            except Exception as e:
+                print(f"⚠️ Error harvesting {symbol}: {e}")
+
+        if actual_bar_label:
+            memory["last_harvested_129m_bar"] = actual_bar_label
+        print(f"🌾 129m Harvest complete: {new_added} stock(s) shortlisted on bar [{actual_bar_label}].")
+
+    # --------------------------------------------------------------------------
+    # PART B: 2-TRADING-DAY MEMORY CLEANUP & ZERO-MISS 15m SUPERTREND SNIPER
+    # --------------------------------------------------------------------------
+    active_stocks = memory.get("stocks", {})
+    if not active_stocks:
+        print("📭 129m Memory is currently empty (0 stocks waiting for 15m ST). Saving & exiting.")
+        save_memory(memory)
+        return
+
+    print(f"\n🎯 Running 15m SuperTrend(10, 2) Sniper on {len(active_stocks)} stock(s) in 129m memory...")
+    start_dt_15m = (now_ist - timedelta(days=LOOKBACK_DAYS_15M)).replace(hour=9, minute=15, second=0, microsecond=0)
+
+    triggered_alerts = []
+    stocks_to_remove = []
+
+    for symbol, info in list(active_stocks.items()):
+        trd_sym = fut_map.get(symbol, info.get("trading_symbol"))
+        if not trd_sym:
+            stocks_to_remove.append(symbol)
+            continue
 
         try:
-            intra_gen = ic.historical_data(
-                exchange=conn.EXCHANGE_TYPE_NFO,
-                trading_symbol=fut_tsym,
-                timeframe=conn.TIMEFRAME_TYPE_MIN,
-                start=start_time,
-                end=end_time,
-            )
-            df_1m = parse_historical_to_df(intra_gen)
+            df_1m = fetch_1m_df(conn, ic, trd_sym, start_dt_15m, now_ist)
             if df_1m.empty:
                 continue
 
-            df_129m = resample_to_129m(df_1m, now_ist, TIMEFRAME_MINS)
-            if len(df_129m) < (ATR_PERIOD + 5):
+            # 1. Check 2-Trading-Day Expiry (Ignoring the signal's current trading day)
+            added_date = datetime.strptime(info["added_trade_date"], "%Y-%m-%d").date()
+            all_trade_dates = sorted(list(set(df_1m.index.date)))
+            subsequent_trade_days = [d for d in all_trade_dates if d > added_date]
+
+            if len(subsequent_trade_days) > MAX_NEXT_TRADING_DAYS:
+                print(f"  🗑️ Expired {symbol} (Added {added_date}, {len(subsequent_trade_days)} trading days elapsed).")
+                stocks_to_remove.append(symbol)
                 continue
 
-            df_129m["ATR100"] = calculate_atr(df_129m, ATR_PERIOD)
-            current_idx = len(df_129m) - 1
-
-            if current_idx < 4:
-                continue
-            if pd.isna(df_129m.loc[current_idx, 'ATR100']):
+            # 2. Resample to 15m and Calculate SuperTrend (10, 2)
+            df_15m = resample_to_15m(df_1m, now_ist)
+            if len(df_15m) < ST_PERIOD + 3:
                 continue
 
-            bar_time_str = df_129m.loc[current_idx, 'Datetime'].strftime("%d-%b %H:%M")
-            latest_bar_str = bar_time_str
+            df_st = calculate_supertrend_15m(df_15m, period=ST_PERIOD, multiplier=ST_MULTIPLIER)
 
-            match_data = evaluate_4bar_setup(df_129m, current_idx)
+            comp_close_dt = IST.localize(datetime.strptime(info["comp_bar_close_iso"], "%Y-%m-%d %H:%M:%S"))
+            last_checked_iso = info.get("last_checked_15m_iso", "")
+            last_checked_dt = (
+                IST.localize(datetime.strptime(last_checked_iso, "%Y-%m-%d %H:%M:%S"))
+                if last_checked_iso else None
+            )
 
-            if match_data:
-                print(f"  ✅ MATCH: {fut_tsym} | {match_data['Signal']} | Bar: {bar_time_str} | Ratio: {match_data['Ratio']}", flush=True)
+            # Check every newly completed 15m bar since the compression bar closed (handles GitHub cron delays!)
+            triggered_on_bar = None
+            for idx_pos in range(1, len(df_st)):
+                cur_bar = df_st.iloc[idx_pos]
+                prev_bar = df_st.iloc[idx_pos - 1]
+                bar_ts = cur_bar.name
 
-                results.append({
-                    "Stock": stock,
-                    "Setup": match_data["Signal"],
-                    "Bar Open": bar_time_str,
-                    "ATR(100)": match_data["Ref ATR"],
-                    "Max 4B Body": match_data["Max 4B Body"],
-                    "Live Body": match_data["Live Body"],
-                    "Ratio": match_data["Ratio"]
-                })
+                if bar_ts < comp_close_dt:
+                    continue
+                if not ALLOW_SAME_DAY_15M_TRIGGER and bar_ts.date() <= added_date:
+                    continue
+                if last_checked_dt is not None and bar_ts <= last_checked_dt:
+                    continue
 
-        except Exception:
-            continue
+                is_buy_flip = (info["group"] == "BUY") and (prev_bar["st_dir"] == -1 and cur_bar["st_dir"] == 1)
+                is_sell_flip = (info["group"] == "SELL") and (prev_bar["st_dir"] == 1 and cur_bar["st_dir"] == -1)
 
-    if results:
-        res_df = pd.DataFrame(results)
-        setup_order = ["Bull Setup 🟢", "Bear Setup 🔴"]
-        res_df["Setup"] = pd.Categorical(res_df["Setup"], categories=setup_order, ordered=True)
-        res_df = res_df.sort_values(by=["Setup", "Ratio"], ascending=[True, False]).reset_index(drop=True)
+                if is_buy_flip or is_sell_flip:
+                    triggered_on_bar = cur_bar
+                    break
 
-        print(f"\n🎯 Matches found for [{latest_bar_str}]! Sending email notification...", flush=True)
-        print(tabulate(res_df, headers="keys", tablefmt="psql", showindex=False), flush=True)
-        send_email_alert(res_df, now_ist_str, latest_bar_str)
+            # Update last_checked_15m_iso to the latest completed 15m bar
+            latest_15m_bar = df_st.iloc[-1]
+            if latest_15m_bar.name >= comp_close_dt:
+                info["last_checked_15m_iso"] = latest_15m_bar.name.strftime("%Y-%m-%d %H:%M:%S")
+
+            if triggered_on_bar is not None:
+                alert_item = dict(info)
+                alert_item["st_bar_time"] = triggered_on_bar.name.strftime("%d-%b %H:%M")
+                alert_item["live_15m_close"] = round(float(triggered_on_bar["close"]), 2)
+                alert_item["st_level"] = round(float(triggered_on_bar["st_val"]), 2)
+                triggered_alerts.append(alert_item)
+                stocks_to_remove.append(symbol)
+                print(f"  🔥 TRIGGERED 15m ST(10,2): {symbol} ({info['group']}) on 15m bar {alert_item['st_bar_time']}!")
+            else:
+                st_state = "GREEN" if latest_15m_bar["st_dir"] == 1 else "RED"
+                print(f"  ⏳ Watching {symbol} ({info['group']} | Added {info['bar_time']} | Day +{len(subsequent_trade_days)}) -> 15m ST is {st_state} ({round(float(latest_15m_bar['st_val']), 2)})")
+
+        except Exception as e:
+            print(f"⚠️ Error checking 15m ST for {symbol}: {e}")
+
+    for sym in set(stocks_to_remove):
+        memory["stocks"].pop(sym, None)
+
+    save_memory(memory)
+
+    if triggered_alerts:
+        send_15m_st_email_alert(triggered_alerts, len(memory["stocks"]))
     else:
-        print(f"\nNo setups matched for [{latest_bar_str}]. Sending 0-match confirmation email...", flush=True)
-        send_email_alert(pd.DataFrame(), now_ist_str, latest_bar_str)
-
-    return latest_bar_str
-
-def run_definedge_129m_scheduler():
-    ist_tz = pytz.timezone("Asia/Kolkata")
-    now_ist = datetime.now(ist_tz)
-    event_name = os.environ.get("GITHUB_EVENT_NAME", "manual")
-
-    # 1. Always run an immediate scan if triggered manually OR if a bar has already closed today
-    if event_name == "workflow_dispatch" or now_ist.time() >= dt_time(11, 24):
-        print(f"Trigger: {event_name} at {now_ist.strftime('%H:%M:%S')} IST -> Running immediate scan...", flush=True)
-        execute_single_scan()
-
-    # 2. If it's a weekday during market hours, stay awake for any upcoming 129m bar closes within 4.5 hours
-    while True:
-        now_ist = datetime.now(ist_tz)
-        if now_ist.weekday() >= 5 or now_ist.time() >= dt_time(15, 41):
-            print("Market session finished for today. Exiting cleanly.", flush=True)
-            break
-
-        upcoming_targets = [
-            datetime.combine(now_ist.date(), t, tzinfo=ist_tz)
-            for t in SCAN_TARGETS_IST
-            if t > now_ist.time()
-        ]
-        if not upcoming_targets:
-            break
-
-        next_target = upcoming_targets[0]
-        wait_seconds = (next_target - now_ist).total_seconds()
-
-        # Only wait if the next bar close is within 4.5 hours (prevents GitHub 6h job timeout)
-        if wait_seconds > 16200:
-            print(f"Next target {next_target.strftime('%H:%M:%S')} is >4.5 hours away. Exiting until next trigger.", flush=True)
-            break
-
-        print(f"⏳ Waiting {int(wait_seconds // 60)}m {int(wait_seconds % 60)}s until next 129m bar close at {next_target.strftime('%H:%M:%S')} IST...", flush=True)
-        time.sleep(max(1, wait_seconds))
-        execute_single_scan()
+        print("ℹ️ No 15m SuperTrend (10,2) flips on 129m memory stocks on this bar. No email sent.")
 
 if __name__ == "__main__":
-    run_definedge_129m_scheduler()
+    run_scanner()
