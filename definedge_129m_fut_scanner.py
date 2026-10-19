@@ -112,6 +112,81 @@ def parse_expiry_date(val):
             continue
     return None
 
+def get_current_month_nfo_futures(conn=None):
+    today = datetime.now(IST).date()
+    records = []
+
+    if conn is not None and hasattr(conn, "symbols") and conn.symbols:
+        for sym in conn.symbols:
+            if sym.get("segment") == "NFO" and sym.get("instrument_type") == "FUTSTK":
+                exp_date = parse_expiry_date(sym.get("expiry"))
+                if exp_date and exp_date >= today:
+                    records.append({
+                        "underlying": str(sym.get("symbol", "")).strip(),
+                        "trading_symbol": str(sym.get("trading_symbol", "")).strip(),
+                        "token": str(sym.get("token", "")).strip(),
+                        "expiry": exp_date
+                    })
+
+    if not records:
+        url = "https://app.definedgesecurities.com/public/allmaster.zip"
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            csv_name = z.namelist()[0]
+            with z.open(csv_name) as f:
+                df = pd.read_csv(f, header=None, dtype=str, low_memory=False)
+
+        nfo = df[(df[0] == "NFO") & (df[4] == "FUTSTK")].copy()
+        for exp_col in [5, 8, 6, 7]:
+            if exp_col in nfo.columns:
+                parsed = pd.to_datetime(nfo[exp_col], format="%d%m%Y", errors="coerce")
+                if parsed.notna().sum() > 0:
+                    nfo["expiry"] = parsed.dt.date
+                    break
+
+        nfo = nfo[nfo["expiry"].notna() & (nfo["expiry"] >= today)]
+        for _, row in nfo.iterrows():
+            records.append({
+                "underlying": str(row[2]).strip(),
+                "trading_symbol": str(row[3]).strip(),
+                "token": str(row[1]).strip(),
+                "expiry": row["expiry"]
+            })
+
+    if not records:
+        return []
+
+    df_fut = pd.DataFrame(records)
+    df_fut = df_fut.sort_values("expiry").groupby("underlying", as_index=False).first()
+    df_fut = df_fut.sort_values("underlying").reset_index(drop=True)
+    return df_fut.to_dict("records")
+
+def fetch_1m_df(conn, ic, trading_symbol, start_dt, end_dt):
+    hist = ic.historical_data(
+        exchange=conn.EXCHANGE_TYPE_NFO,
+        trading_symbol=trading_symbol,
+        timeframe=conn.TIMEFRAME_TYPE_MIN,
+        start=start_dt,
+        end=end_dt
+    )
+    df = pd.DataFrame(list(hist))
+    if df.empty:
+        return pd.DataFrame()
+
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    if df["datetime"].dt.tz is None:
+        df["datetime"] = df["datetime"].dt.tz_localize(IST)
+    else:
+        df["datetime"] = df["datetime"].dt.tz_convert(IST)
+
+    df = df.set_index("datetime").sort_index()
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
 # ==============================================================================
 # 4. EXACT ORIGINAL ATR(100) & 129M 4-BAR COMPRESSION LOGIC
 # ==============================================================================
@@ -385,32 +460,14 @@ def run_scanner():
     memory = load_memory()
     conn, ic = login_definedge()
     
-    # Map watchlist stocks to current month futures
+    # Fetch current month NFO futures and filter strictly by your fno_stocks watchlist
+    all_futures = get_current_month_nfo_futures(conn)
     stock_set = set(fno_stocks)
-    today_date_local = now_ist.date()
-    fut_by_stock = {}
-
-    for sym in conn.symbols:
-        if sym.get("segment") == conn.EXCHANGE_TYPE_NFO and sym.get("instrument_type") == "FUTSTK":
-            base_sym = sym.get("symbol")
-            if base_sym in stock_set:
-                exp_date = parse_expiry_date(sym.get("expiry"))
-                if exp_date and exp_date >= today_date_local:
-                    fut_by_stock.setdefault(base_sym, []).append((exp_date, sym))
-
-    fut_map = {}
-    valid_futures = []
-    for stock in fno_stocks:
-        if stock in fut_by_stock:
-            all_entries = fut_by_stock[stock]
-            nearest_expiry = min(exp for exp, _ in all_entries)
-            fut_contract = next(sym for exp, sym in all_entries if exp == nearest_expiry)
-            trd_sym = fut_contract["trading_symbol"]
-            fut_map[stock] = trd_sym
-            valid_futures.append({"underlying": stock, "trading_symbol": trd_sym})
+    valid_futures = [f for f in all_futures if f["underlying"] in stock_set]
+    fut_map = {f["underlying"]: f["trading_symbol"] for f in valid_futures}
 
     if not valid_futures:
-        print("⚠️ No NFO Stock Futures loaded. Exiting.")
+        print("⚠️ No NFO Stock Futures loaded from watchlist. Exiting.")
         sys.exit(1)
 
     latest_129m_start = get_latest_completed_129m_start(now_ist)
