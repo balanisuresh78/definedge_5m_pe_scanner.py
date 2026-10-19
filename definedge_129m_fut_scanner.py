@@ -555,4 +555,18 @@ def run_scanner():
                 st_state = "GREEN" if latest_15m_bar["st_dir"] == 1 else "RED"
                 print(f"  ⏳ Watching {symbol} ({info['group']} | Added {info['bar_time']} | Day +{len(subsequent_trade_days)}) -> 15m ST is {st_state}")
 
-        except Exception as e
+        except Exception as e:
+            print(f"⚠️ Error checking 15m ST for {symbol}: {e}")
+
+    for sym in set(stocks_to_remove):
+        memory["stocks"].pop(sym, None)
+
+    save_memory(memory)
+
+    if triggered_alerts:
+        send_15m_st_email_alert(triggered_alerts, len(memory["stocks"]))
+    else:
+        print("ℹ️ No 15m SuperTrend (10,2) flips on 129m memory stocks on this bar. No email sent.")
+
+if __name__ == "__main__":
+    run_scanner()
