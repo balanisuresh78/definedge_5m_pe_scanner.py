@@ -33,7 +33,7 @@ TIMEFRAME_129M = 129
 ATR_PERIOD_129M = 100
 BODY_ATR_MULT = 0.67
 CONSEC_BARS = 4
-LOOKBACK_DAYS_129M = 75
+HIST_LOOKBACK_DAYS = 95
 
 ST_PERIOD = 10
 ST_MULTIPLIER = 2.0
@@ -41,6 +41,35 @@ LOOKBACK_DAYS_15M = 15
 
 MAX_NEXT_TRADING_DAYS = 2
 ALLOW_SAME_DAY_15M_TRIGGER = True
+
+# Standard F&O Stock Futures Watchlist
+fno_stocks = [
+    "360ONE", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENT", "ADANIPORTS",
+    "ALKEM", "AMBUJACEM", "ANGELONE", "APLAPOLLO", "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY",
+    "ASIANPAINT", "ASTRAL", "ATUL", "AUBANK", "AUROPHARMA", "AXISBANK", "BAJAJ-AUTO",
+    "BAJAJFINSV", "BAJFINANCE", "BALKRISIND", "BALRAMCHIN", "BANDHANBNK", "BANKBARODA",
+    "BATAINDIA", "BEL", "BERGEPAINT", "BHARTIARTL", "BIOCON", "BOSCHLTD", "BPCL",
+    "BRITANNIA", "BSOFT", "CAMS", "CANBK", "CANFINHOME", "CHAMBLFERT", "CHOLAFIN",
+    "CIPLA", "COALINDIA", "COFORGE", "COLPAL", "CONCOR", "COROMANDEL", "CROMPTON",
+    "CUB", "CUMMINSIND", "DABUR", "DALBHARAT", "DEEPAKNTR", "DELHIVERY", "DIVISLAB",
+    "DIXON", "DLF", "DRREDDY", "EICHERMOT", "ESCORTS", "EXIDEIND", "FEDERALBNK",
+    "GAIL", "GLENMARK", "GMRAIRPORT", "GNFC", "GODREJCP", "GODREJPROP", "GRASIM",
+    "GUJGASLTD", "HAL", "HAVELLS", "HCLTECH", "HDFCAMC", "HDFCBANK", "HDFCLIFE",
+    "HEROMOTOCO", "HINDALCO", "HINDCOPPER", "HINDPETRO", "HINDUNILVR", "ICICIBANK",
+    "ICICIGI", "ICICIPRULI", "IDEA", "IDFCFIRSTB", "IEX", "IGL", "INDHOTEL",
+    "INDIACEM", "INDIAMART", "INDUSINDBK", "INDUSTOWER", "INFY", "IOC", "IPCALAB",
+    "ITC", "JINDALSTEL", "JKCEMENT", "JSWSTEEL", "JUBLFOOD", "KOTAKBANK", "LALPATHLAB",
+    "LAURUSLABS", "LICHSGFIN", "LICI", "LTIM", "LTTS", "LUPIN", "M&M", "M&MFIN",
+    "MANAPPURAM", "MARICO", "MARUTI", "MCX", "METROPOLIS", "MFSL", "MGL", "MOTHERSON",
+    "MPHASIS", "MRF", "MUTHOOTFIN", "NAUKRI", "NBCC", "NESTLEIND", "NMDC", "NTPC",
+    "OBEROIRLTY", "OFSS", "ONGC", "PAGEIND", "PEL", "PERSISTENT", "PETRONET", "PFC",
+    "PIDILITIND", "PIIND", "PNB", "POLYCAB", "POWERGRID", "PVRINOX", "RAMCOCEM",
+    "RBLBANK", "RECLTD", "RELIANCE", "SBICARD", "SBILIFE", "SBIN", "SHREECEM",
+    "SHRIRAMFIN", "SIEMENS", "SRF", "SUNPHARMA", "SUNTV", "SYNGENE", "TATACHEM",
+    "TATACOMM", "TATACONSUM", "TATAMOTORS", "TATAPOWER", "TATASTEEL", "TCS", "TECHM",
+    "TITAN", "TORNTPHARM", "TRENT", "TVSMOTOR", "UPL", "VEDL", "VOLTAS", "WIPRO",
+    "ZEEL", "ZYDUSLIFE"
+]
 
 # ==============================================================================
 # 2. PERSISTENT MEMORY MANAGEMENT
@@ -83,83 +112,8 @@ def parse_expiry_date(val):
             continue
     return None
 
-def get_current_month_nfo_futures(conn=None):
-    today = datetime.now(IST).date()
-    records = []
-
-    if conn is not None and hasattr(conn, "symbols") and conn.symbols:
-        for sym in conn.symbols:
-            if sym.get("segment") == "NFO" and sym.get("instrument_type") == "FUTSTK":
-                exp_date = parse_expiry_date(sym.get("expiry"))
-                if exp_date and exp_date >= today:
-                    records.append({
-                        "underlying": str(sym.get("symbol", "")).strip(),
-                        "trading_symbol": str(sym.get("trading_symbol", "")).strip(),
-                        "token": str(sym.get("token", "")).strip(),
-                        "expiry": exp_date
-                    })
-
-    if not records:
-        url = "https://app.definedgesecurities.com/public/allmaster.zip"
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-            csv_name = z.namelist()[0]
-            with z.open(csv_name) as f:
-                df = pd.read_csv(f, header=None, dtype=str, low_memory=False)
-
-        nfo = df[(df[0] == "NFO") & (df[4] == "FUTSTK")].copy()
-        for exp_col in [5, 8, 6, 7]:
-            if exp_col in nfo.columns:
-                parsed = pd.to_datetime(nfo[exp_col], format="%d%m%Y", errors="coerce")
-                if parsed.notna().sum() > 0:
-                    nfo["expiry"] = parsed.dt.date
-                    break
-
-        nfo = nfo[nfo["expiry"].notna() & (nfo["expiry"] >= today)]
-        for _, row in nfo.iterrows():
-            records.append({
-                "underlying": str(row[2]).strip(),
-                "trading_symbol": str(row[3]).strip(),
-                "token": str(row[1]).strip(),
-                "expiry": row["expiry"]
-            })
-
-    if not records:
-        return []
-
-    df_fut = pd.DataFrame(records)
-    df_fut = df_fut.sort_values("expiry").groupby("underlying", as_index=False).first()
-    df_fut = df_fut.sort_values("underlying").reset_index(drop=True)
-    return df_fut.to_dict("records")
-
-def fetch_1m_df(conn, ic, trading_symbol, start_dt, end_dt):
-    hist = ic.historical_data(
-        exchange=conn.EXCHANGE_TYPE_NFO,
-        trading_symbol=trading_symbol,
-        timeframe=conn.TIMEFRAME_TYPE_MIN,
-        start=start_dt,
-        end=end_dt
-    )
-    df = pd.DataFrame(list(hist))
-    if df.empty:
-        return pd.DataFrame()
-
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    if df["datetime"].dt.tz is None:
-        df["datetime"] = df["datetime"].dt.tz_localize(IST)
-    else:
-        df["datetime"] = df["datetime"].dt.tz_convert(IST)
-
-    df = df.set_index("datetime").sort_index()
-    for col in ["open", "high", "low", "close", "volume"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
-
 # ==============================================================================
-# 4. OLD SIMPLE ROLLING ATR & 129M 4-BAR COMPRESSION LOGIC
+# 4. EXACT ORIGINAL ATR(100) & 129M 4-BAR COMPRESSION LOGIC
 # ==============================================================================
 BAR_CLOSURE_TIMES_129M = [
     (dtime(9, 15), dtime(11, 24)),
@@ -176,7 +130,7 @@ def get_latest_completed_129m_start(now_ist):
     return completed_start
 
 def resample_to_129m(df_1m, now_ist):
-    df = df_1m.copy().between_time("09:15", "15:30")
+    df = df_1m.copy().between_time("09:15", "15:40")
     if df.empty:
         return pd.DataFrame()
 
@@ -239,7 +193,6 @@ def evaluate_4bar_compression(df_129m):
     if pd.isna(ref_atr) or ref_atr <= 0:
         return None
 
-    # Old 129m logic: compare all 4 bar bodies strictly against 0.67 * current bar's Ref ATR(100)
     last4 = df.iloc[-CONSEC_BARS:]
     max_allowed_body = BODY_ATR_MULT * ref_atr
     if not (last4["body"] < max_allowed_body).all():
@@ -431,10 +384,32 @@ def run_scanner():
 
     memory = load_memory()
     conn, ic = login_definedge()
-    futures = get_current_month_nfo_futures(conn)
-    fut_map = {f["underlying"]: f["trading_symbol"] for f in futures}
+    
+    # Map watchlist stocks to current month futures
+    stock_set = set(fno_stocks)
+    today_date_local = now_ist.date()
+    fut_by_stock = {}
 
-    if not futures:
+    for sym in conn.symbols:
+        if sym.get("segment") == conn.EXCHANGE_TYPE_NFO and sym.get("instrument_type") == "FUTSTK":
+            base_sym = sym.get("symbol")
+            if base_sym in stock_set:
+                exp_date = parse_expiry_date(sym.get("expiry"))
+                if exp_date and exp_date >= today_date_local:
+                    fut_by_stock.setdefault(base_sym, []).append((exp_date, sym))
+
+    fut_map = {}
+    valid_futures = []
+    for stock in fno_stocks:
+        if stock in fut_by_stock:
+            all_entries = fut_by_stock[stock]
+            nearest_expiry = min(exp for exp, _ in all_entries)
+            fut_contract = next(sym for exp, sym in all_entries if exp == nearest_expiry)
+            trd_sym = fut_contract["trading_symbol"]
+            fut_map[stock] = trd_sym
+            valid_futures.append({"underlying": stock, "trading_symbol": trd_sym})
+
+    if not valid_futures:
         print("⚠️ No NFO Stock Futures loaded. Exiting.")
         sys.exit(1)
 
@@ -452,7 +427,6 @@ def run_scanner():
     )
 
     if should_harvest:
-        # Purge any existing entries from the same bar_time so re-runs overwrite cleanly
         if target_bar_str:
             stale_same_bar = [
                 s for s, inf in memory.get("stocks", {}).items()
@@ -460,15 +434,13 @@ def run_scanner():
             ]
             for s in stale_same_bar:
                 memory["stocks"].pop(s, None)
-            if stale_same_bar:
-                print(f"🧹 Cleared {len(stale_same_bar)} previous entries for bar [{target_bar_str}] before re-harvesting.")
 
         print(f"\n🌾 Running 129m 4-Bar Compression Harvester (Target Bar: {expected_129m_label})...")
-        start_dt_129m = (now_ist - timedelta(days=LOOKBACK_DAYS_129M)).replace(hour=9, minute=15, second=0, microsecond=0)
+        start_dt_129m = (now_ist - timedelta(days=HIST_LOOKBACK_DAYS)).replace(hour=9, minute=15, second=0, microsecond=0)
         new_added = 0
         actual_bar_label = memory.get("last_harvested_129m_bar", "")
 
-        for idx, fut in enumerate(futures, 1):
+        for idx, fut in enumerate(valid_futures, 1):
             symbol = fut["underlying"]
             trd_sym = fut["trading_symbol"]
             try:
@@ -487,7 +459,7 @@ def run_scanner():
                     res["trading_symbol"] = trd_sym
                     memory["stocks"][symbol] = res
                     new_added += 1
-                    print(f"  ➕ Added/Updated in 129m memory: {symbol} ({res['signal']}) on bar {res['bar_time']} | ATR: {res['atr']} | Ratio: {res['body_atr_ratio']}")
+                    print(f"  ➕ Added/Updated in 129m memory: {symbol} ({res['signal']}) on bar {res['bar_time']} | Ratio: {res['body_atr_ratio']}")
             except Exception as e:
                 print(f"⚠️ Error harvesting {symbol}: {e}")
 
@@ -572,7 +544,7 @@ def run_scanner():
                 stocks_to_remove.append(symbol)
             else:
                 st_state = "GREEN" if latest_15m_bar["st_dir"] == 1 else "RED"
-                print(f"  ⏳ Watching {symbol} ({info['group']} | Added {info['bar_time']} | Day +{len(subsequent_trade_days)}) -> 15m ST is {st_state} ({round(float(latest_15m_bar['st_val']), 2)})")
+                print(f"  ⏳ Watching {symbol} ({info['group']} | Added {info['bar_time']} | Day +{len(subsequent_trade_days)}) -> 15m ST is {st_state}")
 
         except Exception as e:
             print(f"⚠️ Error checking 15m ST for {symbol}: {e}")
