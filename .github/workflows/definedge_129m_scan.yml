@@ -1,0 +1,65 @@
+name: Definedge 129m Compression + 15m ST Sniper
+
+on:
+  schedule:
+    # 15m Sniper + 13:35 Bar 2 Harvester (:05, :20, :35, :50 past the hour)
+    - cron: '5,20,35,50 4-9 * * 1-5'
+    - cron: '5 10 * * 1-5'
+    # Bar 1 Close (11:24 IST) -> 11:26 IST (05:56 UTC)
+    - cron: '56 5 * * 1-5'
+    # Bar 3 Close (15:40 IST) -> 15:43 IST (10:13 UTC)
+    - cron: '13 10 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: definedge-129m-intraday-scanner
+  cancel-in-progress: true
+
+jobs:
+  run-129m-st-sniper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
+
+      - name: Run 129m Harvester & 15m ST(10,2) Sniper
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ -f "definedge_129m_fut_scanner.py" ]; then
+            python definedge_129m_fut_scanner.py
+          elif [ -f ".github/workflows/definedge_129m_fut_scanner.py" ]; then
+            cp .github/workflows/definedge_129m_fut_scanner.py ./definedge_129m_fut_scanner.py
+            python definedge_129m_fut_scanner.py
+          else
+            echo "❌ definedge_129m_fut_scanner.py not found! Please create File 1."
+            exit 1
+          fi
+
+      - name: Save Updated 129m_memory.json to Repository
+        run: |
+          if [ -f "129m_memory.json" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add 129m_memory.json
+            if ! git diff --staged --quiet; then
+              git commit -m "Auto-update 129m_memory.json"
+              git pull --rebase origin "${GITHUB_REF_NAME}" || true
+              git push origin HEAD:"${GITHUB_REF_NAME}"
+            else
+              echo "No changes to 129m_memory.json."
+            fi
+          fi
