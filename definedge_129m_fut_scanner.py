@@ -29,25 +29,21 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD", "YOUR_GMAIL_APP_PASSWORD").strip()
 IST = pytz.timezone("Asia/Kolkata")
 MEMORY_FILE = "129m_memory.json"
 
-# Stage 1: 129-Minute 4-Bar Compression Parameters
 TIMEFRAME_129M = 129
 ATR_PERIOD_129M = 100
 BODY_ATR_MULT = 0.67
 CONSEC_BARS = 4
 LOOKBACK_DAYS_129M = 95
 
-# Stage 2: 15-Minute SuperTrend (10, 2) Parameters
-TIMEFRAME_15M = 15
 ST_PERIOD = 10
 ST_MULTIPLIER = 2.0
 LOOKBACK_DAYS_15M = 15
 
-# Memory Retention: Ignore current trading day (Day 0) and keep for next 2 trading days
 MAX_NEXT_TRADING_DAYS = 2
 ALLOW_SAME_DAY_15M_TRIGGER = True
 
 # ==============================================================================
-# 2. PERSISTENT MEMORY MANAGEMENT (129m_memory.json)
+# 2. PERSISTENT MEMORY MANAGEMENT
 # ==============================================================================
 def load_memory():
     if not os.path.exists(MEMORY_FILE):
@@ -163,12 +159,8 @@ def fetch_1m_df(conn, ic, trading_symbol, start_dt, end_dt):
     return df
 
 # ==============================================================================
-# 4. STAGE 1: 129-MINUTE RESAMPLING & 4-BAR COMPRESSION LOGIC
+# 4. STANDARD ATR & 129M COMPRESSION LOGIC
 # ==============================================================================
-# Exact 129m bar boundaries across the 09:15 - 15:40 NFO session:
-# Bar 1: 09:15 - 11:24
-# Bar 2: 11:24 - 13:33
-# Bar 3: 13:33 - 15:40
 BAR_CLOSURE_TIMES_129M = [
     (dtime(9, 15), dtime(11, 24)),
     (dtime(11, 24), dtime(13, 33)),
@@ -223,7 +215,7 @@ def resample_to_129m(df_1m, now_ist):
 
     return df_129m
 
-def calculate_wilder_atr(df, period):
+def calculate_standard_atr(df, period=100):
     high = df["high"]
     low = df["low"]
     prev_close = df["close"].shift(1)
@@ -232,7 +224,7 @@ def calculate_wilder_atr(df, period):
         (high - prev_close).abs(),
         (low - prev_close).abs()
     ], axis=1).max(axis=1)
-    return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+    return tr.rolling(window=period, min_periods=period).mean()
 
 def evaluate_4bar_compression(df_129m):
     if len(df_129m) < ATR_PERIOD_129M + CONSEC_BARS + 2:
@@ -240,7 +232,7 @@ def evaluate_4bar_compression(df_129m):
 
     df = df_129m.copy()
     df["body"] = (df["close"] - df["open"]).abs()
-    df["atr"] = calculate_wilder_atr(df, ATR_PERIOD_129M)
+    df["atr"] = calculate_standard_atr(df, ATR_PERIOD_129M)
     df["max_allowed_body"] = BODY_ATR_MULT * df["atr"]
 
     last4 = df.iloc[-CONSEC_BARS:]
@@ -250,8 +242,6 @@ def evaluate_4bar_compression(df_129m):
     if not (last4["body"] < last4["max_allowed_body"]).all():
         return None
 
-    # 4 Down Closes = Bullish Pullback -> BUY Group
-    # 4 Up Closes   = Bearish Pullback -> SELL Group
     closes = df["close"].iloc[-(CONSEC_BARS + 1):].values
     is_bull_setup = all(closes[i] < closes[i - 1] for i in range(1, CONSEC_BARS + 1))
     is_bear_setup = all(closes[i] > closes[i - 1] for i in range(1, CONSEC_BARS + 1))
@@ -285,7 +275,7 @@ def evaluate_4bar_compression(df_129m):
     }
 
 # ==============================================================================
-# 5. STAGE 2: 15-MINUTE SUPERTREND (10, 2) CALCULATION & TRIGGER CHECK
+# 5. 15-MINUTE SUPERTREND (10, 2) SNIPER
 # ==============================================================================
 def resample_to_15m(df_1m, now_ist):
     df = df_1m.copy().between_time("09:15", "15:30")
@@ -315,7 +305,6 @@ def resample_to_15m(df_1m, now_ist):
         return pd.DataFrame()
 
     df_15m = pd.concat(resampled_chunks).sort_index()
-
     today_date = now_ist.date()
     if (df_15m.index.date == today_date).any():
         completed_mask = [
@@ -328,7 +317,7 @@ def resample_to_15m(df_1m, now_ist):
 
 def calculate_supertrend_15m(df_15m, period=10, multiplier=2.0):
     df = df_15m.copy()
-    df["atr"] = calculate_wilder_atr(df, period)
+    df["atr"] = calculate_standard_atr(df, period)
     hl2 = (df["high"] + df["low"]) / 2.0
 
     basic_ub = (hl2 + multiplier * df["atr"]).values
@@ -338,7 +327,7 @@ def calculate_supertrend_15m(df_15m, period=10, multiplier=2.0):
     n = len(df)
     final_ub = np.zeros(n)
     final_lb = np.zeros(n)
-    st_dir = np.ones(n, dtype=int)  # 1 = Bullish (Green), -1 = Bearish (Red)
+    st_dir = np.ones(n, dtype=int)
     st_val = np.zeros(n)
 
     for i in range(n):
@@ -379,9 +368,6 @@ def calculate_supertrend_15m(df_15m, period=10, multiplier=2.0):
     df["st_val"] = st_val
     return df
 
-# ==============================================================================
-# 6. EMAIL ALERT (SENT ONLY WHEN 15M SUPERTREND FLIPS)
-# ==============================================================================
 def send_15m_st_email_alert(triggered_list, active_memory_count):
     now_str = datetime.now(IST).strftime("%d-%b %H:%M:%S")
     subject = f"🚀 15m ST(10,2) Trigger on 129m Compression ({len(triggered_list)} Matches) - ({now_str})"
@@ -405,15 +391,8 @@ def send_15m_st_email_alert(triggered_list, active_memory_count):
 
     table_rows = [
         [
-            m["stock"],
-            m["signal"],
-            m["bar_time"],
-            m["st_bar_time"],
-            m["atr"],
-            m["max_body"],
-            m["live_15m_close"],
-            m["st_level"],
-            m["body_atr_ratio"]
+            m["stock"], m["signal"], m["bar_time"], m["st_bar_time"],
+            m["atr"], m["max_body"], m["live_15m_close"], m["st_level"], m["body_atr_ratio"]
         ]
         for m in (buy_matches + sell_matches)
     ]
@@ -435,16 +414,13 @@ def send_15m_st_email_alert(triggered_list, active_memory_count):
 
     print(f"✅ 15m SuperTrend Alert Email sent for {len(triggered_list)} triggered stock(s)!")
 
-# ==============================================================================
-# 7. MAIN EXECUTION: HARVESTER (129m) + SNIPER (15m ST)
-# ==============================================================================
 def run_scanner():
     now_ist = datetime.now(IST)
     current_t = now_ist.time()
     event_name = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
 
     if event_name == "schedule" and (current_t < dtime(9, 20) or current_t > dtime(17, 30)):
-        print(f"⏹️ Outside market scan window ({now_ist.strftime('%H:%M:%S IST')}). Exiting to free runner.")
+        print(f"⏹️ Outside market scan window ({now_ist.strftime('%H:%M:%S IST')}). Exiting.")
         sys.exit(0)
 
     memory = load_memory()
@@ -456,9 +432,6 @@ def run_scanner():
         print("⚠️ No NFO Stock Futures loaded. Exiting.")
         sys.exit(1)
 
-    # --------------------------------------------------------------------------
-    # PART A: CHECK IF A NEW 129m BAR CLOSED -> RUN 129m 4-BAR HARVESTER
-    # --------------------------------------------------------------------------
     latest_129m_start = get_latest_completed_129m_start(now_ist)
     if latest_129m_start is not None:
         expected_129m_label = f"{now_ist.strftime('%Y-%m-%d')} {latest_129m_start.strftime('%H:%M')}"
@@ -503,12 +476,9 @@ def run_scanner():
             memory["last_harvested_129m_bar"] = actual_bar_label
         print(f"🌾 129m Harvest complete: {new_added} stock(s) shortlisted on bar [{actual_bar_label}].")
 
-    # --------------------------------------------------------------------------
-    # PART B: 2-TRADING-DAY MEMORY CLEANUP & ZERO-MISS 15m SUPERTREND SNIPER
-    # --------------------------------------------------------------------------
     active_stocks = memory.get("stocks", {})
     if not active_stocks:
-        print("📭 129m Memory is currently empty (0 stocks waiting for 15m ST). Saving & exiting.")
+        print("📭 129m Memory is currently empty. Saving & exiting.")
         save_memory(memory)
         return
 
@@ -529,17 +499,14 @@ def run_scanner():
             if df_1m.empty:
                 continue
 
-            # 1. Check 2-Trading-Day Expiry (Ignoring the signal's current trading day)
             added_date = datetime.strptime(info["added_trade_date"], "%Y-%m-%d").date()
             all_trade_dates = sorted(list(set(df_1m.index.date)))
             subsequent_trade_days = [d for d in all_trade_dates if d > added_date]
 
             if len(subsequent_trade_days) > MAX_NEXT_TRADING_DAYS:
-                print(f"  🗑️ Expired {symbol} (Added {added_date}, {len(subsequent_trade_days)} trading days elapsed).")
                 stocks_to_remove.append(symbol)
                 continue
 
-            # 2. Resample to 15m and Calculate SuperTrend (10, 2)
             df_15m = resample_to_15m(df_1m, now_ist)
             if len(df_15m) < ST_PERIOD + 3:
                 continue
@@ -584,23 +551,8 @@ def run_scanner():
                 alert_item["st_level"] = round(float(triggered_on_bar["st_val"]), 2)
                 triggered_alerts.append(alert_item)
                 stocks_to_remove.append(symbol)
-                print(f"  🔥 TRIGGERED 15m ST(10,2): {symbol} ({info['group']}) on 15m bar {alert_item['st_bar_time']}!")
             else:
                 st_state = "GREEN" if latest_15m_bar["st_dir"] == 1 else "RED"
-                print(f"  ⏳ Watching {symbol} ({info['group']} | Added {info['bar_time']} | Day +{len(subsequent_trade_days)}) -> 15m ST is {st_state} ({round(float(latest_15m_bar['st_val']), 2)})")
+                print(f"  ⏳ Watching {symbol} ({info['group']} | Added {info['bar_time']} | Day +{len(subsequent_trade_days)}) -> 15m ST is {st_state}")
 
-        except Exception as e:
-            print(f"⚠️ Error checking 15m ST for {symbol}: {e}")
-
-    for sym in set(stocks_to_remove):
-        memory["stocks"].pop(sym, None)
-
-    save_memory(memory)
-
-    if triggered_alerts:
-        send_15m_st_email_alert(triggered_alerts, len(memory["stocks"]))
-    else:
-        print("ℹ️ No 15m SuperTrend (10,2) flips on 129m memory stocks on this bar. No email sent.")
-
-if __name__ == "__main__":
-    run_scanner()
+        except Exception as e
