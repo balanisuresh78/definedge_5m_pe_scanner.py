@@ -33,7 +33,7 @@ TIMEFRAME_129M = 129
 ATR_PERIOD_129M = 100
 BODY_ATR_MULT = 0.67
 CONSEC_BARS = 4
-LOOKBACK_DAYS_129M = 95
+LOOKBACK_DAYS_129M = 75
 
 ST_PERIOD = 10
 ST_MULTIPLIER = 2.0
@@ -159,7 +159,7 @@ def fetch_1m_df(conn, ic, trading_symbol, start_dt, end_dt):
     return df
 
 # ==============================================================================
-# 4. STANDARD ATR & 129M COMPRESSION LOGIC
+# 4. OLD SIMPLE ROLLING ATR & 129M 4-BAR COMPRESSION LOGIC
 # ==============================================================================
 BAR_CLOSURE_TIMES_129M = [
     (dtime(9, 15), dtime(11, 24)),
@@ -176,7 +176,7 @@ def get_latest_completed_129m_start(now_ist):
     return completed_start
 
 def resample_to_129m(df_1m, now_ist):
-    df = df_1m.copy().between_time("09:15", "15:40")
+    df = df_1m.copy().between_time("09:15", "15:30")
     if df.empty:
         return pd.DataFrame()
 
@@ -215,7 +215,7 @@ def resample_to_129m(df_1m, now_ist):
 
     return df_129m
 
-def calculate_standard_atr(df, period=100):
+def calculate_atr(df, period=100):
     high = df["high"]
     low = df["low"]
     prev_close = df["close"].shift(1)
@@ -232,14 +232,17 @@ def evaluate_4bar_compression(df_129m):
 
     df = df_129m.copy()
     df["body"] = (df["close"] - df["open"]).abs()
-    df["atr"] = calculate_standard_atr(df, ATR_PERIOD_129M)
-    df["max_allowed_body"] = BODY_ATR_MULT * df["atr"]
+    df["atr"] = calculate_atr(df, ATR_PERIOD_129M)
 
-    last4 = df.iloc[-CONSEC_BARS:]
-    if last4["atr"].isna().any():
+    last_bar = df.iloc[-1]
+    ref_atr = last_bar["atr"]
+    if pd.isna(ref_atr) or ref_atr <= 0:
         return None
 
-    if not (last4["body"] < last4["max_allowed_body"]).all():
+    # Old 129m logic: compare all 4 bar bodies strictly against 0.67 * current bar's Ref ATR(100)
+    last4 = df.iloc[-CONSEC_BARS:]
+    max_allowed_body = BODY_ATR_MULT * ref_atr
+    if not (last4["body"] < max_allowed_body).all():
         return None
 
     closes = df["close"].iloc[-(CONSEC_BARS + 1):].values
@@ -249,10 +252,12 @@ def evaluate_4bar_compression(df_129m):
     if not (is_bull_setup or is_bear_setup):
         return None
 
-    last_bar = last4.iloc[-1]
+    live_body = float(last_bar["body"])
+    max_4b_body = float(last4["body"].max())
+    ratio = round(float(ref_atr) / live_body, 2) if live_body > 0 else 999.0
+
     prev_bar = df.iloc[-(CONSEC_BARS + 1)]
     roc_pct = ((last_bar["close"] - prev_bar["close"]) / prev_bar["close"]) * 100.0
-    max_body_ratio = (last4["body"] / last4["atr"]).max()
 
     bar_start_dt = last4.index[-1]
     if bar_start_dt.time() == dtime(13, 33):
@@ -261,16 +266,17 @@ def evaluate_4bar_compression(df_129m):
         bar_close_dt = bar_start_dt + timedelta(minutes=TIMEFRAME_129M)
 
     return {
-        "signal": "BULL (4 Down Closes)" if is_bull_setup else "BEAR (4 Up Closes)",
+        "signal": "Bull Setup 🟢" if is_bull_setup else "Bear Setup 🔴",
         "group": "BUY" if is_bull_setup else "SELL",
         "bar_time": bar_start_dt.strftime("%d-%b %H:%M"),
         "comp_bar_close_iso": bar_close_dt.strftime("%Y-%m-%d %H:%M:%S"),
         "last_checked_15m_iso": "",
         "added_trade_date": bar_start_dt.strftime("%Y-%m-%d"),
         "close": round(float(last_bar["close"]), 2),
-        "atr": round(float(last_bar["atr"]), 2),
-        "max_body": round(float(last4["body"].max()), 2),
-        "body_atr_ratio": round(float(max_body_ratio), 2),
+        "atr": round(float(ref_atr), 2),
+        "max_body": round(max_4b_body, 2),
+        "live_body": round(live_body, 2),
+        "body_atr_ratio": ratio,
         "roc_pct": round(float(roc_pct), 2)
     }
 
@@ -317,7 +323,7 @@ def resample_to_15m(df_1m, now_ist):
 
 def calculate_supertrend_15m(df_15m, period=10, multiplier=2.0):
     df = df_15m.copy()
-    df["atr"] = calculate_standard_atr(df, period)
+    df["atr"] = calculate_atr(df, period)
     hl2 = (df["high"] + df["low"]) / 2.0
 
     basic_ub = (hl2 + multiplier * df["atr"]).values
@@ -372,8 +378,8 @@ def send_15m_st_email_alert(triggered_list, active_memory_count):
     now_str = datetime.now(IST).strftime("%d-%b %H:%M:%S")
     subject = f"🚀 15m ST(10,2) Trigger on 129m Compression ({len(triggered_list)} Matches) - ({now_str})"
 
-    buy_matches = sorted([m for m in triggered_list if m["group"] == "BUY"], key=lambda x: x["roc_pct"])
-    sell_matches = sorted([m for m in triggered_list if m["group"] == "SELL"], key=lambda x: x["roc_pct"], reverse=True)
+    buy_matches = sorted([m for m in triggered_list if m["group"] == "BUY"], key=lambda x: x["body_atr_ratio"], reverse=True)
+    sell_matches = sorted([m for m in triggered_list if m["group"] == "SELL"], key=lambda x: x["body_atr_ratio"], reverse=True)
 
     buy_top5 = ", ".join([m["stock"] for m in buy_matches[:5]]) or "None"
     sell_top5 = ", ".join([m["stock"] for m in sell_matches[:5]]) or "None"
@@ -397,8 +403,8 @@ def send_15m_st_email_alert(triggered_list, active_memory_count):
         for m in (buy_matches + sell_matches)
     ]
     headers = [
-        "Stock", "Setup", "Bar Date", "15m ST Bar",
-        "ATR(100)", "Max 4B Body", "Live", "ST(10,2)", "BodyRatio"
+        "Stock", "Setup", "Bar Open", "15m ST Bar",
+        "ATR(100)", "Max 4B Body", "Live 15m", "ST(10,2)", "Ratio"
     ]
     body_lines.append(tabulate(table_rows, headers=headers, tablefmt="grid"))
 
@@ -435,8 +441,10 @@ def run_scanner():
     latest_129m_start = get_latest_completed_129m_start(now_ist)
     if latest_129m_start is not None:
         expected_129m_label = f"{now_ist.strftime('%Y-%m-%d')} {latest_129m_start.strftime('%H:%M')}"
+        target_bar_str = f"{now_ist.strftime('%d-%b')} {latest_129m_start.strftime('%H:%M')}"
     else:
         expected_129m_label = "PREV_DAY"
+        target_bar_str = None
 
     should_harvest = (
         (latest_129m_start is not None and memory.get("last_harvested_129m_bar") != expected_129m_label)
@@ -444,6 +452,17 @@ def run_scanner():
     )
 
     if should_harvest:
+        # Purge any existing entries from the same bar_time so re-runs overwrite cleanly
+        if target_bar_str:
+            stale_same_bar = [
+                s for s, inf in memory.get("stocks", {}).items()
+                if inf.get("bar_time") == target_bar_str
+            ]
+            for s in stale_same_bar:
+                memory["stocks"].pop(s, None)
+            if stale_same_bar:
+                print(f"🧹 Cleared {len(stale_same_bar)} previous entries for bar [{target_bar_str}] before re-harvesting.")
+
         print(f"\n🌾 Running 129m 4-Bar Compression Harvester (Target Bar: {expected_129m_label})...")
         start_dt_129m = (now_ist - timedelta(days=LOOKBACK_DAYS_129M)).replace(hour=9, minute=15, second=0, microsecond=0)
         new_added = 0
@@ -468,7 +487,7 @@ def run_scanner():
                     res["trading_symbol"] = trd_sym
                     memory["stocks"][symbol] = res
                     new_added += 1
-                    print(f"  ➕ Added/Updated in 129m memory: {symbol} ({res['signal']}) on bar {res['bar_time']}")
+                    print(f"  ➕ Added/Updated in 129m memory: {symbol} ({res['signal']}) on bar {res['bar_time']} | ATR: {res['atr']} | Ratio: {res['body_atr_ratio']}")
             except Exception as e:
                 print(f"⚠️ Error harvesting {symbol}: {e}")
 
@@ -553,7 +572,7 @@ def run_scanner():
                 stocks_to_remove.append(symbol)
             else:
                 st_state = "GREEN" if latest_15m_bar["st_dir"] == 1 else "RED"
-                print(f"  ⏳ Watching {symbol} ({info['group']} | Added {info['bar_time']} | Day +{len(subsequent_trade_days)}) -> 15m ST is {st_state}")
+                print(f"  ⏳ Watching {symbol} ({info['group']} | Added {info['bar_time']} | Day +{len(subsequent_trade_days)}) -> 15m ST is {st_state} ({round(float(latest_15m_bar['st_val']), 2)})")
 
         except Exception as e:
             print(f"⚠️ Error checking 15m ST for {symbol}: {e}")
