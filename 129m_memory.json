@@ -17,6 +17,38 @@
       "stock": "ASHOKLEY",
       "trading_symbol": "ASHOKLEY27OCT26F"
     },
+    "BHARATFORG": {
+      "added_trade_date": "2026-10-19",
+      "atr": 25.9,
+      "bar_time": "19-Oct 13:33",
+      "body_atr_ratio": 2.2,
+      "close": 1801.1,
+      "comp_bar_close_iso": "2026-10-19 15:40:00",
+      "group": "BUY",
+      "last_checked_15m_iso": "",
+      "live_body": 11.8,
+      "max_body": 15.0,
+      "roc_pct": -2.46,
+      "signal": "Bull Setup \ud83d\udfe2",
+      "stock": "BHARATFORG",
+      "trading_symbol": "BHARATFORG27OCT26F"
+    },
+    "COCHINSHIP": {
+      "added_trade_date": "2026-10-19",
+      "atr": 22.2,
+      "bar_time": "19-Oct 13:33",
+      "body_atr_ratio": 3.83,
+      "close": 1226.2,
+      "comp_bar_close_iso": "2026-10-19 15:40:00",
+      "group": "BUY",
+      "last_checked_15m_iso": "",
+      "live_body": 5.8,
+      "max_body": 8.5,
+      "roc_pct": -2.45,
+      "signal": "Bull Setup \ud83d\udfe2",
+      "stock": "COCHINSHIP",
+      "trading_symbol": "COCHINSHIP27OCT26F"
+    },
     "CONCOR": {
       "added_trade_date": "2026-10-19",
       "atr": 6.35,
@@ -113,6 +145,38 @@
       "stock": "MARICO",
       "trading_symbol": "MARICO27OCT26F"
     },
+    "MAZDOCK": {
+      "added_trade_date": "2026-10-19",
+      "atr": 31.58,
+      "bar_time": "19-Oct 13:33",
+      "body_atr_ratio": 2.92,
+      "close": 2059.8,
+      "comp_bar_close_iso": "2026-10-19 15:40:00",
+      "group": "BUY",
+      "last_checked_15m_iso": "",
+      "live_body": 10.8,
+      "max_body": 11.7,
+      "roc_pct": -2.29,
+      "signal": "Bull Setup \ud83d\udfe2",
+      "stock": "MAZDOCK",
+      "trading_symbol": "MAZDOCK27OCT26F"
+    },
+    "NATIONALUM": {
+      "added_trade_date": "2026-10-19",
+      "atr": 5.41,
+      "bar_time": "19-Oct 13:33",
+      "body_atr_ratio": 2.52,
+      "close": 318.75,
+      "comp_bar_close_iso": "2026-10-19 15:40:00",
+      "group": "BUY",
+      "last_checked_15m_iso": "",
+      "live_body": 2.15,
+      "max_body": 2.85,
+      "roc_pct": -2.15,
+      "signal": "Bull Setup \ud83d\udfe2",
+      "stock": "NATIONALUM",
+      "trading_symbol": "NATIONALUM27OCT26F"
+    },
     "OFSS": {
       "added_trade_date": "2026-10-19",
       "atr": 177.67,
@@ -129,6 +193,22 @@
       "stock": "OFSS",
       "trading_symbol": "OFSS27OCT26F"
     },
+    "POLICYBZR": {
+      "added_trade_date": "2026-10-19",
+      "atr": 35.64,
+      "bar_time": "19-Oct 13:33",
+      "body_atr_ratio": 4.95,
+      "close": 1035.8,
+      "comp_bar_close_iso": "2026-10-19 15:40:00",
+      "group": "BUY",
+      "last_checked_15m_iso": "",
+      "live_body": 7.2,
+      "max_body": 12.2,
+      "roc_pct": -3.09,
+      "signal": "Bull Setup \ud83d\udfe2",
+      "stock": "POLICYBZR",
+      "trading_symbol": "POLICYBZR27OCT26F"
+    },
     "SHRIRAMFIN": {
       "added_trade_date": "2026-10-19",
       "atr": 13.67,
@@ -144,6 +224,22 @@
       "signal": "Bull Setup \ud83d\udfe2",
       "stock": "SHRIRAMFIN",
       "trading_symbol": "SHRIRAMFIN27OCT26F"
+    },
+    "SOLARINDS": {
+      "added_trade_date": "2026-10-19",
+      "atr": 329.77,
+      "bar_time": "19-Oct 13:33",
+      "body_atr_ratio": 2.01,
+      "close": 19744.0,
+      "comp_bar_close_iso": "2026-10-19 15:40:00",
+      "group": "BUY",
+      "last_checked_15m_iso": "",
+      "live_body": 164.0,
+      "max_body": 164.0,
+      "roc_pct": -1.9,
+      "signal": "Bull Setup \ud83d\udfe2",
+      "stock": "SOLARINDS",
+      "trading_symbol": "SOLARINDS27OCT26F"
     }
   }
 }
