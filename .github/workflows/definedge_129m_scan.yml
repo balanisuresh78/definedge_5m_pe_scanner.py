@@ -1,9 +1,15 @@
+# 129m Compression + 15m SuperTrend Sniper Workflow
 name: Definedge 129m Compression + 15m ST Sniper
 
 on:
   schedule:
-    # 15m Sniper + 13:35 Bar 2 Harvester (:05, :20, :35, :50 past the hour)
-    - cron: '5,20,35,50 4-9 * * 1-5'
+    # 15m Sniper + 13:35 Bar 2 Harvester (09:35 to 15:20 IST)
+    - cron: '5,20,35,50 4 * * 1-5'
+    - cron: '5,20,35,50 5 * * 1-5'
+    - cron: '5,20,35,50 6 * * 1-5'
+    - cron: '5,20,35,50 7 * * 1-5'
+    - cron: '5,20,35,50 8 * * 1-5'
+    - cron: '5,20,35,50 9 * * 1-5'
     - cron: '5 10 * * 1-5'
     # Bar 1 Close (11:24 IST) -> 11:26 IST (05:56 UTC)
     - cron: '56 5 * * 1-5'
