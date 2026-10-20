@@ -1,12 +1,10 @@
-# 129m Compression + 15m SuperTrend Sniper Workflow
+# 129m Compression + 15m SuperTrend Sniper (Stay-Awake Market Clock)
 name: Definedge 129m Compression + 15m ST Sniper
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
-    - cron: '5,20,35,50 4-9 * * 1-5'
-    - cron: '5,13 10 * * 1-5'
-    - cron: '56 5 * * 1-5'
+    # Wakes up once at 9:00 AM IST (03:30 UTC) to start the all-day market clock
+    - cron: '30 3 * * 1-5'
   workflow_dispatch:
 
 permissions:
@@ -19,7 +17,7 @@ concurrency:
 jobs:
   run-129m-st-sniper:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 400
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -39,22 +37,19 @@ jobs:
       - name: Install Dependencies
         run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
 
-      - name: Run 129m Harvester & 15m ST(10,2) Sniper
+      - name: Run Stay-Awake Market Clock Scanner
         env:
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           if [ -f "definedge_129m_fut_scanner.py" ]; then
             python definedge_129m_fut_scanner.py
-          elif [ -f ".github/workflows/definedge_129m_fut_scanner.py" ]; then
-            cp .github/workflows/definedge_129m_fut_scanner.py ./definedge_129m_fut_scanner.py
-            python definedge_129m_fut_scanner.py
           else
             echo "❌ definedge_129m_fut_scanner.py not found!"
             exit 1
           fi
 
-      - name: Save 129m_memory.json to memory-state branch (Never touch main!)
+      - name: Save 129m_memory.json to memory-state branch
         run: |
           if [ -f "129m_memory.json" ]; then
             cp 129m_memory.json /tmp/129m_memory.json
