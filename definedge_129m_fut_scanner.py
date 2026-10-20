@@ -635,5 +635,53 @@ def run_scanner():
     else:
         print("ℹ️ No 15m SuperTrend (10,2) flips on 129m memory stocks on this bar. No email sent.")
 
+import time
+
+def stay_awake_market_clock():
+    """Keeps the GitHub runner alive through the trading day, executing the scanner 
+    on the exact second every 15 minutes from 09:15 to 15:45 IST."""
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
+    
+    # If triggered manually, run once immediately
+    if event_name == "workflow_dispatch":
+        print("🚀 Manual run triggered. Executing scanner once...")
+        run_scanner()
+        return
+
+    print("⏰ Stay-Awake Market Clock started. Waiting for market hours (09:15 - 15:45 IST)...")
+    
+    while True:
+        now_ist = datetime.now(IST)
+        current_t = now_ist.time()
+        
+        # Stop the runner after market close (15:45 IST)
+        if current_t > dtime(15, 45) or now_ist.weekday() >= 5:
+            print(f"Market session ended ({now_ist.strftime('%H:%M:%S IST')}). Shutting down runner.")
+            break
+
+        # Run during market hours (09:15 to 15:40 IST)
+        if dtime(9, 15) <= current_t <= dtime(15, 40):
+            print(f"\n🔔 Market Clock Tick at {now_ist.strftime('%H:%M:%S IST')}. Running scanner...")
+            try:
+                run_scanner()
+            except Exception as e:
+                print(f"⚠️ Error during scheduled scan tick: {e}")
+            
+            # Sleep until the next 15-minute mark (+ 3 seconds buffer for candle closure)
+            now_ist = datetime.now(IST)
+            minute = now_ist.minute
+            next_minute = ((minute // 15) + 1) * 15
+            
+            if next_minute >= 60:
+                sleep_seconds = (60 - minute) * 60 - now_ist.second + 3
+            else:
+                sleep_seconds = (next_minute - minute) * 60 - now_ist.second + 3
+                
+            print(f"💤 Sleeping for {round(sleep_seconds / 60, 1)} minutes until next 15m candle close...")
+            time.sleep(max(10, sleep_seconds))
+        else:
+            # Before market open, check every 60 seconds
+            time.sleep(60)
+
 if __name__ == "__main__":
-    run_scanner()
+    stay_awake_market_clock()
