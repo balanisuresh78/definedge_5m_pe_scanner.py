@@ -3,6 +3,7 @@ name: Definedge 129m Compression + 15m ST Sniper
 
 on:
   schedule:
+    - cron: '*/5 * * * *'
     - cron: '5,20,35,50 4-9 * * 1-5'
     - cron: '5,13 10 * * 1-5'
     - cron: '56 5 * * 1-5'
