@@ -3,18 +3,9 @@ name: Definedge 129m Compression + 15m ST Sniper
 
 on:
   schedule:
-    # 15m Sniper + 13:35 Bar 2 Harvester (09:35 to 15:20 IST)
-    - cron: '5,20,35,50 4 * * 1-5'
-    - cron: '5,20,35,50 5 * * 1-5'
-    - cron: '5,20,35,50 6 * * 1-5'
-    - cron: '5,20,35,50 7 * * 1-5'
-    - cron: '5,20,35,50 8 * * 1-5'
-    - cron: '5,20,35,50 9 * * 1-5'
-    - cron: '5 10 * * 1-5'
-    # Bar 1 Close (11:24 IST) -> 11:26 IST (05:56 UTC)
+    - cron: '5,20,35,50 4-9 * * 1-5'
+    - cron: '5,13 10 * * 1-5'
     - cron: '56 5 * * 1-5'
-    # Bar 3 Close (15:40 IST) -> 15:43 IST (10:13 UTC)
-    - cron: '13 10 * * 1-5'
   workflow_dispatch:
 
 permissions:
@@ -31,6 +22,13 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore 129m_memory.json from memory-state branch
+        run: |
+          git fetch origin memory-state:memory-state || true
+          git checkout memory-state -- 129m_memory.json 2>/dev/null || true
 
       - name: Set Up Python 3.11
         uses: actions/setup-python@v5
@@ -51,21 +49,19 @@ jobs:
             cp .github/workflows/definedge_129m_fut_scanner.py ./definedge_129m_fut_scanner.py
             python definedge_129m_fut_scanner.py
           else
-            echo "❌ definedge_129m_fut_scanner.py not found! Please create File 1."
+            echo "❌ definedge_129m_fut_scanner.py not found!"
             exit 1
           fi
 
-      - name: Save Updated 129m_memory.json to Repository
+      - name: Save 129m_memory.json to memory-state branch (Never touch main!)
         run: |
           if [ -f "129m_memory.json" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
+            cp 129m_memory.json /tmp/129m_memory.json
+            git config user.name "balanisuresh78"
+            git config user.email "balanisuresh@gmail.com"
+            git checkout -B memory-state
+            cp /tmp/129m_memory.json 129m_memory.json
             git add 129m_memory.json
-            if ! git diff --staged --quiet; then
-              git commit -m "Auto-update 129m_memory.json"
-              git pull --rebase origin "${GITHUB_REF_NAME}" || true
-              git push origin HEAD:"${GITHUB_REF_NAME}"
-            else
-              echo "No changes to 129m_memory.json."
-            fi
+            git commit -m "Update 129m_memory.json" || true
+            git push -f origin memory-state
           fi
