@@ -33,7 +33,7 @@ TIMEFRAME_129M = 129
 ATR_PERIOD_129M = 100
 BODY_ATR_MULT = 0.67
 CONSEC_BARS = 4
-HIST_LOOKBACK_DAYS = 95
+HIST_LOOKBACK_DAYS = 75
 
 ST_PERIOD = 10
 ST_MULTIPLIER = 2.0
@@ -42,33 +42,42 @@ LOOKBACK_DAYS_15M = 15
 MAX_NEXT_TRADING_DAYS = 2
 ALLOW_SAME_DAY_15M_TRIGGER = True
 
-# Standard F&O Stock Futures Watchlist
+# Standard F&O Stock Futures Watchlist (Includes all symbols from your 129m setup)
 fno_stocks = [
-    "360ONE", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENT", "ADANIPORTS",
-    "ALKEM", "AMBUJACEM", "ANGELONE", "APLAPOLLO", "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY",
-    "ASIANPAINT", "ASTRAL", "ATUL", "AUBANK", "AUROPHARMA", "AXISBANK", "BAJAJ-AUTO",
-    "BAJAJFINSV", "BAJFINANCE", "BALKRISIND", "BALRAMCHIN", "BANDHANBNK", "BANKBARODA",
-    "BATAINDIA", "BEL", "BERGEPAINT", "BHARTIARTL", "BIOCON", "BOSCHLTD", "BPCL",
-    "BRITANNIA", "BSOFT", "CAMS", "CANBK", "CANFINHOME", "CHAMBLFERT", "CHOLAFIN",
-    "CIPLA", "COALINDIA", "COFORGE", "COLPAL", "CONCOR", "COROMANDEL", "CROMPTON",
-    "CUB", "CUMMINSIND", "DABUR", "DALBHARAT", "DEEPAKNTR", "DELHIVERY", "DIVISLAB",
-    "DIXON", "DLF", "DRREDDY", "EICHERMOT", "ESCORTS", "EXIDEIND", "FEDERALBNK",
-    "GAIL", "GLENMARK", "GMRAIRPORT", "GNFC", "GODREJCP", "GODREJPROP", "GRASIM",
-    "GUJGASLTD", "HAL", "HAVELLS", "HCLTECH", "HDFCAMC", "HDFCBANK", "HDFCLIFE",
-    "HEROMOTOCO", "HINDALCO", "HINDCOPPER", "HINDPETRO", "HINDUNILVR", "ICICIBANK",
-    "ICICIGI", "ICICIPRULI", "IDEA", "IDFCFIRSTB", "IEX", "IGL", "INDHOTEL",
-    "INDIACEM", "INDIAMART", "INDUSINDBK", "INDUSTOWER", "INFY", "IOC", "IPCALAB",
-    "ITC", "JINDALSTEL", "JKCEMENT", "JSWSTEEL", "JUBLFOOD", "KOTAKBANK", "LALPATHLAB",
-    "LAURUSLABS", "LICHSGFIN", "LICI", "LTIM", "LTTS", "LUPIN", "M&M", "M&MFIN",
-    "MANAPPURAM", "MARICO", "MARUTI", "MCX", "METROPOLIS", "MFSL", "MGL", "MOTHERSON",
-    "MPHASIS", "MRF", "MUTHOOTFIN", "NAUKRI", "NBCC", "NESTLEIND", "NMDC", "NTPC",
-    "OBEROIRLTY", "OFSS", "ONGC", "PAGEIND", "PEL", "PERSISTENT", "PETRONET", "PFC",
-    "PIDILITIND", "PIIND", "PNB", "POLYCAB", "POWERGRID", "PVRINOX", "RAMCOCEM",
-    "RBLBANK", "RECLTD", "RELIANCE", "SBICARD", "SBILIFE", "SBIN", "SHREECEM",
-    "SHRIRAMFIN", "SIEMENS", "SRF", "SUNPHARMA", "SUNTV", "SYNGENE", "TATACHEM",
-    "TATACOMM", "TATACONSUM", "TATAMOTORS", "TATAPOWER", "TATASTEEL", "TCS", "TECHM",
-    "TITAN", "TORNTPHARM", "TRENT", "TVSMOTOR", "UPL", "VEDL", "VOLTAS", "WIPRO",
-    "ZEEL", "ZYDUSLIFE"
+    "360ONE", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENSOL", "ADANIENT",
+    "ADANIGREEN", "ADANIPORTS", "ALKEM", "AMBER", "AMBUJACEM", "ANGELONE", "APLAPOLLO",
+    "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY", "ASIANPAINT", "ASTRAL", "ATGL", "ATUL",
+    "AUBANK", "AUROPHARMA", "AXISBANK", "BAJAJ-AUTO", "BAJAJFINSV", "BAJFINANCE",
+    "BALKRISIND", "BALRAMCHIN", "BANDHANBNK", "BANKBARODA", "BANKINDIA", "BATAINDIA",
+    "BDL", "BEL", "BERGEPAINT", "BHARATFORG", "BHARTIARTL", "BHEL", "BIOCON", "BOSCHLTD",
+    "BPCL", "BRITANNIA", "BSE", "BSOFT", "CAMS", "CANBK", "CANFINHOME", "CDSL", "CESC",
+    "CGPOWER", "CHAMBLFERT", "CHOLAFIN", "CIPLA", "COALINDIA", "COCHINSHIP", "COFORGE",
+    "COLPAL", "CONCOR", "COROMANDEL", "CROMPTON", "CUB", "CUMMINSIND", "CYIENT", "DABUR",
+    "DALBHARAT", "DEEPAKNTR", "DELHIVERY", "DIVISLAB", "DIXON", "DLF", "DMART", "DRREDDY",
+    "EICHERMOT", "ESCORTS", "EXIDEIND", "FEDERALBNK", "FORTIS", "GAIL", "GLENMARK",
+    "GMRAIRPORT", "GNFC", "GODREJCP", "GODREJPROP", "GRANULES", "GRASIM", "GUJGASLTD",
+    "HAL", "HAVELLS", "HCLTECH", "HDFCAMC", "HDFCBANK", "HDFCLIFE", "HEROMOTOCO",
+    "HFCL", "HINDALCO", "HINDCOPPER", "HINDPETRO", "HINDUNILVR", "HUDCO", "ICICIBANK",
+    "ICICIGI", "ICICIPRULI", "IDEA", "IDFCFIRSTB", "IEX", "IGL", "IIFL", "INDHOTEL",
+    "INDIACEM", "INDIAMART", "INDIANB", "INDIGO", "INDUSINDBK", "INDUSTOWER", "INFY",
+    "INOXWIND", "IOC", "IPCALAB", "IRB", "IRCTC", "IREDA", "IRFC", "ITC", "JINDALSTEL",
+    "JIOFIN", "JKCEMENT", "JSL", "JSWENERGY", "JSWSTEEL", "JUBLFOOD", "KALYANKJIL",
+    "KAYNES", "KEI", "KFINTECH", "KOTAKBANK", "KPITTECH", "LALPATHLAB", "LAURUSLABS",
+    "LICHSGFIN", "LICI", "LODHA", "LT", "LTF", "LTIM", "LTTS", "LUPIN", "M&M", "M&MFIN",
+    "MANAPPURAM", "MANKIND", "MARICO", "MARUTI", "MAXHEALTH", "MAZDOCK", "MCX",
+    "METROPOLIS", "MFSL", "MGL", "MOTHERSON", "MPHASIS", "MRF", "MUTHOOTFIN",
+    "NATIONALUM", "NAUKRI", "NAVINFLUOR", "NBCC", "NCC", "NESTLEIND", "NHPC", "NMDC",
+    "NTPC", "NYKAA", "OBEROIRLTY", "OFSS", "OIL", "ONGC", "PAGEIND", "PATANJALI",
+    "PAYTM", "PEL", "PERSISTENT", "PETRONET", "PFC", "PHOENIXLTD", "PIDILITIND", "PIIND",
+    "PNB", "PNBHOUSING", "POLICYBZR", "POLYCAB", "POONAWALLA", "POWERGRID", "PPLPHARMA",
+    "PRESTIGE", "PVRINOX", "RAMCOCEM", "RBLBANK", "RECLTD", "RELIANCE", "RVNL", "SAIL",
+    "SBICARD", "SBILIFE", "SBIN", "SHREECEM", "SHRIRAMFIN", "SIEMENS", "SJVN",
+    "SOLARINDS", "SONACOMS", "SRF", "SUNPHARMA", "SUNTV", "SUPREMEIND", "SYNGENE",
+    "TATACHEM", "TATACOMM", "TATACONSUM", "TATAELXSI", "TATAMOTORS", "TATAPOWER",
+    "TATASTEEL", "TATATECH", "TCS", "TECHM", "TIINDIA", "TITAGARH", "TITAN",
+    "TORNTPHARM", "TORNTPOWER", "TRENT", "TVSMOTOR", "ULTRACEMCO", "UNIONBANK",
+    "UNITDSPR", "UPL", "VBL", "VEDL", "VOLTAS", "WIPRO", "YESBANK", "ZEEL", "ZOMATO",
+    "ZYDUSLIFE"
 ]
 
 # ==============================================================================
@@ -448,6 +457,9 @@ def send_15m_st_email_alert(triggered_list, active_memory_count):
 
     print(f"✅ 15m SuperTrend Alert Email sent for {len(triggered_list)} triggered stock(s)!")
 
+# ==============================================================================
+# 6. MAIN RUNNER: 129m HARVESTER + 15m SUPERTREND SNIPER
+# ==============================================================================
 def run_scanner():
     now_ist = datetime.now(IST)
     current_t = now_ist.time()
@@ -459,7 +471,7 @@ def run_scanner():
 
     memory = load_memory()
     conn, ic = login_definedge()
-    
+
     # Fetch current month NFO futures and filter strictly by your fno_stocks watchlist
     all_futures = get_current_month_nfo_futures(conn)
     stock_set = set(fno_stocks)
@@ -473,29 +485,21 @@ def run_scanner():
     latest_129m_start = get_latest_completed_129m_start(now_ist)
     if latest_129m_start is not None:
         expected_129m_label = f"{now_ist.strftime('%Y-%m-%d')} {latest_129m_start.strftime('%H:%M')}"
-        target_bar_str = f"{now_ist.strftime('%d-%b')} {latest_129m_start.strftime('%H:%M')}"
     else:
         expected_129m_label = "PREV_DAY"
-        target_bar_str = None
 
     should_harvest = (
         (latest_129m_start is not None and memory.get("last_harvested_129m_bar") != expected_129m_label)
+        or not memory.get("stocks")
         or event_name == "workflow_dispatch"
     )
 
     if should_harvest:
-        if target_bar_str:
-            stale_same_bar = [
-                s for s, inf in memory.get("stocks", {}).items()
-                if inf.get("bar_time") == target_bar_str
-            ]
-            for s in stale_same_bar:
-                memory["stocks"].pop(s, None)
-
         print(f"\n🌾 Running 129m 4-Bar Compression Harvester (Target Bar: {expected_129m_label})...")
         start_dt_129m = (now_ist - timedelta(days=HIST_LOOKBACK_DAYS)).replace(hour=9, minute=15, second=0, microsecond=0)
         new_added = 0
         actual_bar_label = memory.get("last_harvested_129m_bar", "")
+        harvested_batch = {}
 
         for idx, fut in enumerate(valid_futures, 1):
             symbol = fut["underlying"]
@@ -514,13 +518,26 @@ def run_scanner():
                 if res:
                     res["stock"] = symbol
                     res["trading_symbol"] = trd_sym
-                    memory["stocks"][symbol] = res
+                    harvested_batch[symbol] = res
                     new_added += 1
-                    print(f"  ➕ Added/Updated in 129m memory: {symbol} ({res['signal']}) on bar {res['bar_time']} | Ratio: {res['body_atr_ratio']}")
+                    print(f"  ➕ Added/Updated in 129m memory: {symbol} ({res['signal']}) on bar {res['bar_time']} | ATR: {res['atr']} | Ratio: {res['body_atr_ratio']}")
             except Exception as e:
                 print(f"⚠️ Error harvesting {symbol}: {e}")
 
-        if actual_bar_label:
+        # Cleanly replace any old entries from the same bar_time before inserting the fresh batch
+        if harvested_batch:
+            sample_bar_time = next(iter(harvested_batch.values()))["bar_time"]
+            stale_same_bar = [
+                s for s, inf in memory.get("stocks", {}).items()
+                if inf.get("bar_time") == sample_bar_time
+            ]
+            for s in stale_same_bar:
+                memory["stocks"].pop(s, None)
+            memory["stocks"].update(harvested_batch)
+
+        if latest_129m_start is not None:
+            memory["last_harvested_129m_bar"] = expected_129m_label
+        elif actual_bar_label:
             memory["last_harvested_129m_bar"] = actual_bar_label
         print(f"🌾 129m Harvest complete: {new_added} stock(s) shortlisted on bar [{actual_bar_label}].")
 
@@ -552,6 +569,7 @@ def run_scanner():
             subsequent_trade_days = [d for d in all_trade_dates if d > added_date]
 
             if len(subsequent_trade_days) > MAX_NEXT_TRADING_DAYS:
+                print(f"  🗑️ Expired {symbol} (Added {added_date}, {len(subsequent_trade_days)} trading days elapsed).")
                 stocks_to_remove.append(symbol)
                 continue
 
@@ -599,9 +617,10 @@ def run_scanner():
                 alert_item["st_level"] = round(float(triggered_on_bar["st_val"]), 2)
                 triggered_alerts.append(alert_item)
                 stocks_to_remove.append(symbol)
+                print(f"  🔥 TRIGGERED 15m ST(10,2): {symbol} ({info['group']}) on 15m bar {alert_item['st_bar_time']}!")
             else:
                 st_state = "GREEN" if latest_15m_bar["st_dir"] == 1 else "RED"
-                print(f"  ⏳ Watching {symbol} ({info['group']} | Added {info['bar_time']} | Day +{len(subsequent_trade_days)}) -> 15m ST is {st_state}")
+                print(f"  ⏳ Watching {symbol} ({info['group']} | Added {info['bar_time']} | Day +{len(subsequent_trade_days)}) -> 15m ST is {st_state} ({round(float(latest_15m_bar['st_val']), 2)})")
 
         except Exception as e:
             print(f"⚠️ Error checking 15m ST for {symbol}: {e}")
