@@ -1,10 +1,14 @@
-# 129m Compression + 15m SuperTrend Sniper (Stay-Awake Market Clock)
+# 129m Compression + 15m SuperTrend Sniper (Multi-Cron Relay + Stay-Awake Clock)
 name: Definedge 129m Compression + 15m ST Sniper
 
 on:
   schedule:
-    # Wakes up once at 9:00 AM IST (03:30 UTC) to start the all-day market clock
-    - cron: '30 3 * * 1-5'
+    # Morning Session Wake-Up Crons (07:45 AM to 09:15 AM IST) - Defeats GitHub Cron Lag
+    - cron: '15,30,45 2 * * 1-5'
+    - cron: '0,15,30,45 3 * * 1-5'
+    # Afternoon Relay Wake-Up Crons (12:00 PM to 01:15 PM IST)
+    - cron: '30,45 6 * * 1-5'
+    - cron: '0,15,30,45 7 * * 1-5'
   workflow_dispatch:
 
 permissions:
@@ -12,12 +16,12 @@ permissions:
 
 concurrency:
   group: definedge-129m-intraday-scanner
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   run-129m-st-sniper:
     runs-on: ubuntu-latest
-    timeout-minutes: 400
+    timeout-minutes: 350
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -49,7 +53,8 @@ jobs:
             exit 1
           fi
 
-      - name: Save 129m_memory.json to memory-state branch
+      - name: Final Sync of 129m_memory.json to memory-state branch
+        if: always()
         run: |
           if [ -f "129m_memory.json" ]; then
             cp 129m_memory.json /tmp/129m_memory.json
