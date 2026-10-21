@@ -1,9 +1,11 @@
 import os
 import sys
+import time
 import json
 import zipfile
 import io
 import smtplib
+import subprocess
 import pyotp
 import requests
 import pytz
@@ -37,12 +39,11 @@ HIST_LOOKBACK_DAYS = 75
 
 ST_PERIOD = 10
 ST_MULTIPLIER = 2.0
-LOOKBACK_DAYS_15M = 15
+LOOKBACK_DAYS_15M = 30
 
 MAX_NEXT_TRADING_DAYS = 2
 ALLOW_SAME_DAY_15M_TRIGGER = True
 
-# Standard F&O Stock Futures Watchlist (Includes all symbols from your 129m setup)
 fno_stocks = [
     "360ONE", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENSOL", "ADANIENT",
     "ADANIGREEN", "ADANIPORTS", "ALKEM", "AMBER", "AMBUJACEM", "ANGELONE", "APLAPOLLO",
@@ -81,7 +82,7 @@ fno_stocks = [
 ]
 
 # ==============================================================================
-# 2. PERSISTENT MEMORY MANAGEMENT
+# 2. PERSISTENT MEMORY MANAGEMENT (REAL-TIME SYNC TO memory-state BRANCH)
 # ==============================================================================
 def load_memory():
     if not os.path.exists(MEMORY_FILE):
@@ -96,10 +97,32 @@ def load_memory():
         print(f"⚠️ Could not read {MEMORY_FILE}, starting fresh: {e}")
         return {"last_harvested_129m_bar": "", "stocks": {}}
 
+def push_memory_to_git():
+    """Immediately persists 129m_memory.json to the memory-state branch without touching main."""
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+    try:
+        cmds = [
+            "cp 129m_memory.json /tmp/129m_memory_backup.json",
+            'git config user.name "balanisuresh78"',
+            'git config user.email "balanisuresh@gmail.com"',
+            "git checkout -B memory-state",
+            "cp /tmp/129m_memory_backup.json 129m_memory.json",
+            "git add 129m_memory.json",
+            'git commit -m "Update 129m_memory.json" || true',
+            "git push -f origin memory-state",
+            "git checkout -f main",
+            "cp /tmp/129m_memory_backup.json 129m_memory.json"
+        ]
+        subprocess.run(" && ".join(cmds), shell=True, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        print(f"⚠️ Git memory sync warning: {e}")
+
 def save_memory(memory_data):
     with open(MEMORY_FILE, "w", encoding="utf-8") as f:
         json.dump(memory_data, f, indent=2, sort_keys=True)
     print(f"💾 Memory saved to {MEMORY_FILE} ({len(memory_data.get('stocks', {}))} active stocks).")
+    push_memory_to_git()
 
 # ==============================================================================
 # 3. DEFINEDGE LOGIN & MASTER SYMBOL FETCH
@@ -253,7 +276,8 @@ def resample_to_129m(df_1m, now_ist):
 
     return df_129m
 
-def calculate_atr(df, period=100):
+def calculate_atr_sma(df, period=100):
+    """Simple Moving Average ATR used by the 129m 4-Bar Compression scanner."""
     high = df["high"]
     low = df["low"]
     prev_close = df["close"].shift(1)
@@ -264,13 +288,25 @@ def calculate_atr(df, period=100):
     ], axis=1).max(axis=1)
     return tr.rolling(window=period, min_periods=period).mean()
 
+def calculate_atr_wilder(df, period=10):
+    """Wilder's RMA ATR used by standard Definedge / TradingView SuperTrend(10, 2)."""
+    high = df["high"]
+    low = df["low"]
+    prev_close = df["close"].shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+
 def evaluate_4bar_compression(df_129m):
     if len(df_129m) < ATR_PERIOD_129M + CONSEC_BARS + 2:
         return None
 
     df = df_129m.copy()
     df["body"] = (df["close"] - df["open"]).abs()
-    df["atr"] = calculate_atr(df, ATR_PERIOD_129M)
+    df["atr"] = calculate_atr_sma(df, ATR_PERIOD_129M)
 
     last_bar = df.iloc[-1]
     ref_atr = last_bar["atr"]
@@ -318,13 +354,15 @@ def evaluate_4bar_compression(df_129m):
     }
 
 # ==============================================================================
-# 5. 15-MINUTE SUPERTREND (10, 2) SNIPER
+# 5. 15-MINUTE SUPERTREND (10, 2) SNIPER (WILDER ATR + CLOSED-BAR VERIFICATION)
 # ==============================================================================
 def resample_to_15m(df_1m, now_ist):
-    df = df_1m.copy().between_time("09:15", "15:30")
+    # Standard 15m NSE/NFO bars run from 09:15 through 15:29 (closing at 15:30)
+    df = df_1m.copy().between_time("09:15", "15:29")
     if df.empty:
         return pd.DataFrame()
 
+    last_1m_ts = df.index[-1]
     resampled_chunks = []
     for _, group in df.groupby(df.index.date):
         bars = group.resample(
@@ -349,9 +387,12 @@ def resample_to_15m(df_1m, now_ist):
 
     df_15m = pd.concat(resampled_chunks).sort_index()
     today_date = now_ist.date()
+
+    # Strictly keep ONLY 15m bars whose closing 1-minute candle (ts + 14m) has arrived
     if (df_15m.index.date == today_date).any():
         completed_mask = [
-            (ts.date() < today_date) or (now_ist >= ts + timedelta(minutes=15))
+            (ts.date() < today_date)
+            or (now_ist >= ts + timedelta(minutes=15) and last_1m_ts >= ts + timedelta(minutes=14))
             for ts in df_15m.index
         ]
         df_15m = df_15m[completed_mask]
@@ -360,7 +401,8 @@ def resample_to_15m(df_1m, now_ist):
 
 def calculate_supertrend_15m(df_15m, period=10, multiplier=2.0):
     df = df_15m.copy()
-    df["atr"] = calculate_atr(df, period)
+    # Use Wilder's RMA ATR(10) to match Definedge Zone / TradingView SuperTrend(10, 2)
+    df["atr"] = calculate_atr_wilder(df, period)
     hl2 = (df["high"] + df["low"]) / 2.0
 
     basic_ub = (hl2 + multiplier * df["atr"]).values
@@ -398,6 +440,7 @@ def calculate_supertrend_15m(df_15m, period=10, multiplier=2.0):
         else:
             final_lb[i] = final_lb[i - 1]
 
+        # Strict candle close crossover requirement
         if st_dir[i - 1] == -1 and close[i] > final_ub[i - 1]:
             st_dir[i] = 1
         elif st_dir[i - 1] == 1 and close[i] < final_lb[i - 1]:
@@ -462,17 +505,11 @@ def send_15m_st_email_alert(triggered_list, active_memory_count):
 # ==============================================================================
 def run_scanner():
     now_ist = datetime.now(IST)
-    current_t = now_ist.time()
     event_name = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
-
-    if event_name == "schedule" and (current_t < dtime(9, 20) or current_t > dtime(17, 30)):
-        print(f"⏹️ Outside market scan window ({now_ist.strftime('%H:%M:%S IST')}). Exiting.")
-        sys.exit(0)
 
     memory = load_memory()
     conn, ic = login_definedge()
 
-    # Fetch current month NFO futures and filter strictly by your fno_stocks watchlist
     all_futures = get_current_month_nfo_futures(conn)
     stock_set = set(fno_stocks)
     valid_futures = [f for f in all_futures if f["underlying"] in stock_set]
@@ -480,7 +517,7 @@ def run_scanner():
 
     if not valid_futures:
         print("⚠️ No NFO Stock Futures loaded from watchlist. Exiting.")
-        sys.exit(1)
+        return
 
     latest_129m_start = get_latest_completed_129m_start(now_ist)
     if latest_129m_start is not None:
@@ -524,7 +561,6 @@ def run_scanner():
             except Exception as e:
                 print(f"⚠️ Error harvesting {symbol}: {e}")
 
-        # Cleanly replace any old entries from the same bar_time before inserting the fresh batch
         if harvested_batch:
             sample_bar_time = next(iter(harvested_batch.values()))["bar_time"]
             stale_same_bar = [
@@ -574,7 +610,7 @@ def run_scanner():
                 continue
 
             df_15m = resample_to_15m(df_1m, now_ist)
-            if len(df_15m) < ST_PERIOD + 3:
+            if len(df_15m) < ST_PERIOD + 5:
                 continue
 
             df_st = calculate_supertrend_15m(df_15m, period=ST_PERIOD, multiplier=ST_MULTIPLIER)
@@ -617,7 +653,7 @@ def run_scanner():
                 alert_item["st_level"] = round(float(triggered_on_bar["st_val"]), 2)
                 triggered_alerts.append(alert_item)
                 stocks_to_remove.append(symbol)
-                print(f"  🔥 TRIGGERED 15m ST(10,2): {symbol} ({info['group']}) on 15m bar {alert_item['st_bar_time']}!")
+                print(f"  🔥 TRIGGERED 15m ST(10,2): {symbol} ({info['group']}) on CLOSED 15m bar {alert_item['st_bar_time']} | Close: {alert_item['live_15m_close']} vs ST: {alert_item['st_level']}!")
             else:
                 st_state = "GREEN" if latest_15m_bar["st_dir"] == 1 else "RED"
                 print(f"  ⏳ Watching {symbol} ({info['group']} | Added {info['bar_time']} | Day +{len(subsequent_trade_days)}) -> 15m ST is {st_state} ({round(float(latest_15m_bar['st_val']), 2)})")
@@ -635,53 +671,76 @@ def run_scanner():
     else:
         print("ℹ️ No 15m SuperTrend (10,2) flips on 129m memory stocks on this bar. No email sent.")
 
-import time
+# ==============================================================================
+# 7. EXACT CHECKPOINT MARKET CLOCK (ALL 15M CLOSES + 11:24, 13:33, 15:40 CLOSES)
+# ==============================================================================
+SCAN_CHECKPOINTS_IST = [
+    dtime(9, 30, 12), dtime(9, 45, 12),
+    dtime(10, 0, 12), dtime(10, 15, 12), dtime(10, 30, 12), dtime(10, 45, 12),
+    dtime(11, 0, 12), dtime(11, 15, 12),
+    dtime(11, 24, 15),  # Exact Bar 1 (09:15-11:24) 129m Harvest
+    dtime(11, 30, 12), dtime(11, 45, 12),
+    dtime(12, 0, 12), dtime(12, 15, 12), dtime(12, 30, 12), dtime(12, 45, 12),
+    dtime(13, 0, 12), dtime(13, 15, 12), dtime(13, 30, 12),
+    dtime(13, 33, 15),  # Exact Bar 2 (11:24-13:33) 129m Harvest
+    dtime(13, 45, 12),
+    dtime(14, 0, 12), dtime(14, 15, 12), dtime(14, 30, 12), dtime(14, 45, 12),
+    dtime(15, 0, 12), dtime(15, 15, 12), dtime(15, 30, 12),
+    dtime(15, 40, 20),  # Exact Bar 3 (13:33-15:40) 129m Harvest
+]
 
 def stay_awake_market_clock():
-    """Keeps the GitHub runner alive through the trading day, executing the scanner 
-    on the exact second every 15 minutes from 09:15 to 15:45 IST."""
     event_name = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
-    
-    # If triggered manually, run once immediately
-    if event_name == "workflow_dispatch":
-        print("🚀 Manual run triggered. Executing scanner once...")
+    now_ist = datetime.now(IST)
+
+    # If triggered manually outside market hours (e.g. evening test), run once immediately
+    if event_name == "workflow_dispatch" and (now_ist.time() < dtime(8, 0) or now_ist.time() > dtime(15, 42)):
+        print("🚀 Manual run outside live market hours. Executing scanner once immediately...")
         run_scanner()
         return
 
-    print("⏰ Stay-Awake Market Clock started. Waiting for market hours (09:15 - 15:45 IST)...")
-    
+    # Split into Morning Session (exits at 12:35 PM) and Afternoon Session (exits at 15:43 PM)
+    # so no single runner ever hits GitHub's 6-hour limit
+    session_cutoff = dtime(12, 35) if now_ist.time() < dtime(11, 0) else dtime(15, 43)
+    print(f"⏰ Market Clock active (Started {now_ist.strftime('%H:%M:%S IST')}, Session Cutoff: {session_cutoff.strftime('%H:%M IST')}).")
+
+    # If the runner booted mid-session (e.g. after 09:30), run an immediate catch-up check first
+    if dtime(9, 30, 12) <= now_ist.time() <= dtime(15, 42):
+        print(f"🔔 Initial catch-up scan at {now_ist.strftime('%H:%M:%S IST')}...")
+        try:
+            run_scanner()
+        except Exception as e:
+            print(f"⚠️ Error in initial scan: {e}")
+
     while True:
         now_ist = datetime.now(IST)
-        current_t = now_ist.time()
-        
-        # Stop the runner after market close (15:45 IST)
-        if current_t > dtime(15, 45) or now_ist.weekday() >= 5:
-            print(f"Market session ended ({now_ist.strftime('%H:%M:%S IST')}). Shutting down runner.")
+        if now_ist.weekday() >= 5 or now_ist.time() >= session_cutoff:
+            print(f"⏹️ Reached session cutoff ({now_ist.strftime('%H:%M:%S IST')}). Exiting runner cleanly.")
             break
 
-        # Run during market hours (09:15 to 15:40 IST)
-        if dtime(9, 15) <= current_t <= dtime(15, 40):
-            print(f"\n🔔 Market Clock Tick at {now_ist.strftime('%H:%M:%S IST')}. Running scanner...")
-            try:
-                run_scanner()
-            except Exception as e:
-                print(f"⚠️ Error during scheduled scan tick: {e}")
-            
-            # Sleep until the next 15-minute mark (+ 3 seconds buffer for candle closure)
-            now_ist = datetime.now(IST)
-            minute = now_ist.minute
-            next_minute = ((minute // 15) + 1) * 15
-            
-            if next_minute >= 60:
-                sleep_seconds = (60 - minute) * 60 - now_ist.second + 3
-            else:
-                sleep_seconds = (next_minute - minute) * 60 - now_ist.second + 3
-                
-            print(f"💤 Sleeping for {round(sleep_seconds / 60, 1)} minutes until next 15m candle close...")
-            time.sleep(max(10, sleep_seconds))
-        else:
-            # Before market open, check every 60 seconds
-            time.sleep(60)
+        # Find the next exact checkpoint
+        today_date = now_ist.date()
+        future_Points = [
+            IST.localize(datetime.combine(today_date, cp))
+            for cp in SCAN_CHECKPOINTS_IST
+            if cp > now_ist.time() and cp <= session_cutoff
+        ]
+
+        if not future_Points:
+            print(f"✅ All checkpoints for this session completed ({now_ist.strftime('%H:%M:%S IST')}).")
+            break
+
+        next_dt = future_Points[0]
+        sleep_secs = (next_dt - now_ist).total_seconds()
+        print(f"💤 Sleeping {round(sleep_secs / 60, 1)} min until next checkpoint: {next_dt.strftime('%H:%M:%S IST')}...")
+        time.sleep(max(1.0, sleep_secs))
+
+        now_ist = datetime.now(IST)
+        print(f"\n🔔 Checkpoint reached at {now_ist.strftime('%H:%M:%S IST')}. Running scanner...")
+        try:
+            run_scanner()
+        except Exception as e:
+            print(f"⚠️ Error during checkpoint scan: {e}")
 
 if __name__ == "__main__":
     stay_awake_market_clock()
