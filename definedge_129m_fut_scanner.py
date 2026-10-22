@@ -503,9 +503,8 @@ def send_15m_st_email_alert(triggered_list, active_memory_count):
 # ==============================================================================
 # 6. MAIN RUNNER: 129m HARVESTER + 15m SUPERTREND SNIPER
 # ==============================================================================
-def run_scanner():
+def run_scanner(force_harvest=False):
     now_ist = datetime.now(IST)
-    event_name = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
 
     memory = load_memory()
     conn, ic = login_definedge()
@@ -528,7 +527,7 @@ def run_scanner():
     should_harvest = (
         (latest_129m_start is not None and memory.get("last_harvested_129m_bar") != expected_129m_label)
         or not memory.get("stocks")
-        or event_name == "workflow_dispatch"
+        or force_harvest
     )
 
     if should_harvest:
@@ -672,7 +671,7 @@ def run_scanner():
         print("ℹ️ No 15m SuperTrend (10,2) flips on 129m memory stocks on this bar. No email sent.")
 
 # ==============================================================================
-# 7. EXACT CHECKPOINT MARKET CLOCK (ALL 15M CLOSES + 11:24, 13:33, 15:40 CLOSES)
+# 7. FULL-DAY CHAINED MARKET CLOCK (MORNING -> AFTERNOON RELAY)
 # ==============================================================================
 SCAN_CHECKPOINTS_IST = [
     dtime(9, 30, 12), dtime(9, 45, 12),
@@ -691,46 +690,54 @@ SCAN_CHECKPOINTS_IST = [
 
 def stay_awake_market_clock():
     event_name = os.environ.get("GITHUB_EVENT_NAME", "workflow_dispatch")
+    session_mode = os.environ.get("SESSION_MODE", "MORNING")
     now_ist = datetime.now(IST)
 
-    # If triggered manually outside market hours (e.g. evening test), run once immediately
-    if event_name == "workflow_dispatch" and (now_ist.time() < dtime(8, 0) or now_ist.time() > dtime(15, 42)):
-        print("🚀 Manual run outside live market hours. Executing scanner once immediately...")
-        run_scanner()
+    # If triggered manually outside market hours (before 05:30 AM or after 03:42 PM), run once & exit
+    if now_ist.time() < dtime(5, 30) or now_ist.time() > dtime(15, 42):
+        if session_mode == "MORNING":
+            print("🚀 Outside live market hours. Executing single harvest/check pass...")
+            run_scanner(force_harvest=(event_name == "workflow_dispatch"))
+        else:
+            print("⏹️ Outside market hours (Afternoon job skipped).")
         return
 
-    # Split into Morning Session (exits at 12:35 PM) and Afternoon Session (exits at 15:43 PM)
-    # so no single runner ever hits GitHub's 6-hour limit
-    session_cutoff = dtime(12, 35) if now_ist.time() < dtime(11, 0) else dtime(15, 43)
-    print(f"⏰ Market Clock active (Started {now_ist.strftime('%H:%M:%S IST')}, Session Cutoff: {session_cutoff.strftime('%H:%M IST')}).")
+    # Morning job runs until 12:32 PM IST, then Afternoon job automatically takes over until 15:43 PM IST
+    if session_mode == "MORNING":
+        if now_ist.time() >= dtime(12, 32):
+            print("⏩ Already past 12:32 PM IST. Handing over immediately to Afternoon Session job...")
+            return
+        session_cutoff = dtime(12, 32)
+    else:
+        session_cutoff = dtime(15, 43)
 
-    # If the runner booted mid-session (e.g. after 09:30), run an immediate catch-up check first
+    print(f"⏰ [{session_mode}] Market Clock active (Started {now_ist.strftime('%H:%M:%S IST')}, Cutoff: {session_cutoff.strftime('%H:%M IST')}).")
+
     if dtime(9, 30, 12) <= now_ist.time() <= dtime(15, 42):
         print(f"🔔 Initial catch-up scan at {now_ist.strftime('%H:%M:%S IST')}...")
         try:
-            run_scanner()
+            run_scanner(force_harvest=False)
         except Exception as e:
             print(f"⚠️ Error in initial scan: {e}")
 
     while True:
         now_ist = datetime.now(IST)
         if now_ist.weekday() >= 5 or now_ist.time() >= session_cutoff:
-            print(f"⏹️ Reached session cutoff ({now_ist.strftime('%H:%M:%S IST')}). Exiting runner cleanly.")
+            print(f"⏹️ Reached {session_mode} cutoff ({now_ist.strftime('%H:%M:%S IST')}). Exiting cleanly.")
             break
 
-        # Find the next exact checkpoint
         today_date = now_ist.date()
-        future_Points = [
+        future_points = [
             IST.localize(datetime.combine(today_date, cp))
             for cp in SCAN_CHECKPOINTS_IST
             if cp > now_ist.time() and cp <= session_cutoff
         ]
 
-        if not future_Points:
-            print(f"✅ All checkpoints for this session completed ({now_ist.strftime('%H:%M:%S IST')}).")
+        if not future_points:
+            print(f"✅ All checkpoints for {session_mode} completed ({now_ist.strftime('%H:%M:%S IST')}).")
             break
 
-        next_dt = future_Points[0]
+        next_dt = future_points[0]
         sleep_secs = (next_dt - now_ist).total_seconds()
         print(f"💤 Sleeping {round(sleep_secs / 60, 1)} min until next checkpoint: {next_dt.strftime('%H:%M:%S IST')}...")
         time.sleep(max(1.0, sleep_secs))
@@ -738,9 +745,11 @@ def stay_awake_market_clock():
         now_ist = datetime.now(IST)
         print(f"\n🔔 Checkpoint reached at {now_ist.strftime('%H:%M:%S IST')}. Running scanner...")
         try:
-            run_scanner()
+            run_scanner(force_harvest=False)
         except Exception as e:
             print(f"⚠️ Error during checkpoint scan: {e}")
 
+if __name__ == "__main__":
+    stay_awake_market_clock()
 if __name__ == "__main__":
     stay_awake_market_clock()
