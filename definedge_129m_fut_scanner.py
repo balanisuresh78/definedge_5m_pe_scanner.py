@@ -357,7 +357,6 @@ def evaluate_4bar_compression(df_129m):
 # 5. 15-MINUTE SUPERTREND (10, 2) SNIPER (WILDER ATR + CLOSED-BAR VERIFICATION)
 # ==============================================================================
 def resample_to_15m(df_1m, now_ist):
-    # Standard 15m NSE/NFO bars run from 09:15 through 15:29 (closing at 15:30)
     df = df_1m.copy().between_time("09:15", "15:29")
     if df.empty:
         return pd.DataFrame()
@@ -388,7 +387,6 @@ def resample_to_15m(df_1m, now_ist):
     df_15m = pd.concat(resampled_chunks).sort_index()
     today_date = now_ist.date()
 
-    # Strictly keep ONLY 15m bars whose closing 1-minute candle (ts + 14m) has arrived
     if (df_15m.index.date == today_date).any():
         completed_mask = [
             (ts.date() < today_date)
@@ -401,7 +399,6 @@ def resample_to_15m(df_1m, now_ist):
 
 def calculate_supertrend_15m(df_15m, period=10, multiplier=2.0):
     df = df_15m.copy()
-    # Use Wilder's RMA ATR(10) to match Definedge Zone / TradingView SuperTrend(10, 2)
     df["atr"] = calculate_atr_wilder(df, period)
     hl2 = (df["high"] + df["low"]) / 2.0
 
@@ -440,7 +437,6 @@ def calculate_supertrend_15m(df_15m, period=10, multiplier=2.0):
         else:
             final_lb[i] = final_lb[i - 1]
 
-        # Strict candle close crossover requirement
         if st_dir[i - 1] == -1 and close[i] > final_ub[i - 1]:
             st_dir[i] = 1
         elif st_dir[i - 1] == 1 and close[i] < final_lb[i - 1]:
@@ -693,7 +689,7 @@ def stay_awake_market_clock():
     session_mode = os.environ.get("SESSION_MODE", "MORNING")
     now_ist = datetime.now(IST)
 
-    # If triggered manually outside market hours (before 05:30 AM or after 03:42 PM), run once & exit
+    # Outside live market hours (before 05:30 AM or after 03:42 PM): run once & exit
     if now_ist.time() < dtime(5, 30) or now_ist.time() > dtime(15, 42):
         if session_mode == "MORNING":
             print("🚀 Outside live market hours. Executing single harvest/check pass...")
@@ -702,12 +698,13 @@ def stay_awake_market_clock():
             print("⏹️ Outside market hours (Afternoon job skipped).")
         return
 
-    # Morning job runs until 12:32 PM IST, then Afternoon job automatically takes over until 15:43 PM IST
+    # Morning job runs through the 11:24:15 Bar 1 harvest (cutoff 11:27 AM IST),
+    # then Afternoon job automatically takes over from 11:27 AM until 15:43 PM IST
     if session_mode == "MORNING":
-        if now_ist.time() >= dtime(12, 32):
-            print("⏩ Already past 12:32 PM IST. Handing over immediately to Afternoon Session job...")
+        if now_ist.time() >= dtime(11, 27):
+            print("⏩ Already past 11:27 AM IST. Handing over immediately to Afternoon Session job...")
             return
-        session_cutoff = dtime(12, 32)
+        session_cutoff = dtime(11, 27)
     else:
         session_cutoff = dtime(15, 43)
 
@@ -749,7 +746,5 @@ def stay_awake_market_clock():
         except Exception as e:
             print(f"⚠️ Error during checkpoint scan: {e}")
 
-if __name__ == "__main__":
-    stay_awake_market_clock()
 if __name__ == "__main__":
     stay_awake_market_clock()
