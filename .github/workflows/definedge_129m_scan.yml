@@ -1,14 +1,13 @@
-# 129m Compression + 15m SuperTrend Sniper (Multi-Cron Relay + Stay-Awake Clock)
+# 129m Compression + 15m SuperTrend Sniper (Full-Day Chained Relay)
 name: Definedge 129m Compression + 15m ST Sniper
 
 on:
   schedule:
-    # Morning Session Wake-Up Crons (07:45 AM to 09:15 AM IST) - Defeats GitHub Cron Lag
-    - cron: '15,30,45 2 * * 1-5'
-    - cron: '0,15,30,45 3 * * 1-5'
-    # Afternoon Relay Wake-Up Crons (12:00 PM to 01:15 PM IST)
-    - cron: '30,45 6 * * 1-5'
-    - cron: '0,15,30,45 7 * * 1-5'
+    # Early Pre-Peak Wake-Up Crons (05:45 AM to 09:10 AM IST)
+    - cron: '15,45 0 * * 1-5'
+    - cron: '15,45 1 * * 1-5'
+    - cron: '15,45 2 * * 1-5'
+    - cron: '10,25,40 3 * * 1-5'
   workflow_dispatch:
 
 permissions:
@@ -19,7 +18,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  run-129m-st-sniper:
+  morning-session:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -41,19 +40,59 @@ jobs:
       - name: Install Dependencies
         run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
 
-      - name: Run Stay-Awake Market Clock Scanner
+      - name: Run Morning Session Clock (Until 12:32 PM IST)
         env:
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+          SESSION_MODE: "MORNING"
+        run: python definedge_129m_fut_scanner.py
+
+      - name: Save 129m_memory.json to memory-state branch
+        if: always()
         run: |
-          if [ -f "definedge_129m_fut_scanner.py" ]; then
-            python definedge_129m_fut_scanner.py
-          else
-            echo "❌ definedge_129m_fut_scanner.py not found!"
-            exit 1
+          if [ -f "129m_memory.json" ]; then
+            cp 129m_memory.json /tmp/129m_memory.json
+            git config user.name "balanisuresh78"
+            git config user.email "balanisuresh@gmail.com"
+            git checkout -B memory-state
+            cp /tmp/129m_memory.json 129m_memory.json
+            git add 129m_memory.json
+            git commit -m "Update 129m_memory.json" || true
+            git push -f origin memory-state
           fi
 
-      - name: Final Sync of 129m_memory.json to memory-state branch
+  afternoon-session:
+    needs: morning-session
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore 129m_memory.json from memory-state branch
+        run: |
+          git fetch origin memory-state:memory-state || true
+          git checkout memory-state -- 129m_memory.json 2>/dev/null || true
+
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
+
+      - name: Run Afternoon Session Clock (12:32 PM to 03:43 PM IST)
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          SESSION_MODE: "AFTERNOON"
+        run: python definedge_129m_fut_scanner.py
+
+      - name: Save 129m_memory.json to memory-state branch
         if: always()
         run: |
           if [ -f "129m_memory.json" ]; then
