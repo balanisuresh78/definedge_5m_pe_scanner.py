@@ -1,0 +1,75 @@
+name: Definedge 3m & 30m Volume Slot Scanner
+
+on:
+  schedule:
+    - cron: '15,45 0 * * 1-5'
+    - cron: '15,45 1 * * 1-5'
+    - cron: '15,45 2 * * 1-5'
+    - cron: '10,25 3 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: definedge-vol-slot-scanner
+  cancel-in-progress: false
+
+jobs:
+  morning-vol-session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
+
+      - name: Run Morning Volume Clock
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          SESSION_MODE: MORNING
+        run: python definedge_vol_slot_scanner.py
+
+      - name: Upload Today Harvest Cache Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-vol-harvest-cache
+          path: daily_vol_harvest_cache.json
+          overwrite: true
+
+  afternoon-vol-session:
+    needs: morning-vol-session
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 260
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Today Harvest Cache Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: daily-vol-harvest-cache
+        continue-on-error: true
+
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
+
+      - name: Run Afternoon Volume Clock
+        env:
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          SESSION_MODE: AFTERNOON
+        run: python definedge_vol_slot_scanner.py
