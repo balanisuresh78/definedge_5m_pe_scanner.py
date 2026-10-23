@@ -1,0 +1,571 @@
+import os
+import sys
+import time
+import json
+import zipfile
+import io
+import smtplib
+import pyotp
+import requests
+import pytz
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta, time as dtime
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from tabulate import tabulate
+from integrate import ConnectToIntegrate, IntegrateData
+
+# ==============================================================================
+# 1. CREDENTIALS & CONFIGURATION
+# ==============================================================================
+API_TOKEN = os.environ.get("DEFINEDGE_API_TOKEN", "7eb93aac-c746-44bd-9755-18ae6289fdfc").strip()
+API_SECRET = os.environ.get("DEFINEDGE_API_SECRET", "snToBptj6e2X/c9c7POM8Q==").strip()
+TOTP_SECRET = os.environ.get("DEFINEDGE_TOTP_SECRET", "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR").strip()
+
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "balanisuresh@gmail.com").strip()
+RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "balanisuresh@gmail.com").strip()
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "YOUR_GMAIL_APP_PASSWORD").strip()
+
+IST = pytz.timezone("Asia/Kolkata")
+CACHE_FILE = "daily_vol_harvest_cache.json"
+
+# Daily Harvest + Volume Ratio Sorting (Locked In)
+HARVEST_TIMEFRAME = "DAILY"
+SORT_TABLE_BY = "VOL_RATIO"
+
+# "NSE" uses continuous 100-day F&O underlying equity data (true 100d ATR & 100d slot volume).
+# "NFO" uses current-month Futures contract (limited to ~55-60 days of contract life).
+SCAN_SEGMENT = "NSE"
+
+ATR_PERIOD = 100
+BODY_ATR_MULT = 0.67
+VOL_AVG_TRADING_DAYS = 100
+CALENDAR_LOOKBACK_DAYS_1M = 165
+CALENDAR_LOOKBACK_DAYS_DAILY = 220
+
+fno_stocks = [
+    "360ONE", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENSOL", "ADANIENT",
+    "ADANIGREEN", "ADANIPORTS", "ALKEM", "AMBER", "AMBUJACEM", "ANGELONE", "APLAPOLLO",
+    "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY", "ASIANPAINT", "ASTRAL", "ATGL", "ATUL",
+    "AUBANK", "AUROPHARMA", "AXISBANK", "BAJAJ-AUTO", "BAJAJFINSV", "BAJFINANCE",
+    "BALKRISIND", "BALRAMCHIN", "BANDHANBNK", "BANKBARODA", "BANKINDIA", "BATAINDIA",
+    "BDL", "BEL", "BERGEPAINT", "BHARATFORG", "BHARTIARTL", "BHEL", "BIOCON", "BOSCHLTD",
+    "BPCL", "BRITANNIA", "BSE", "BSOFT", "CAMS", "CANBK", "CANFINHOME", "CDSL", "CESC",
+    "CGPOWER", "CHAMBLFERT", "CHOLAFIN", "CIPLA", "COALINDIA", "COCHINSHIP", "COFORGE",
+    "COLPAL", "CONCOR", "COROMANDEL", "CROMPTON", "CUB", "CUMMINSIND", "CYIENT", "DABUR",
+    "DALBHARAT", "DEEPAKNTR", "DELHIVERY", "DIVISLAB", "DIXON", "DLF", "DMART", "DRREDDY",
+    "EICHERMOT", "ESCORTS", "EXIDEIND", "FEDERALBNK", "FORTIS", "GAIL", "GLENMARK",
+    "GMRAIRPORT", "GNFC", "GODREJCP", "GODREJPROP", "GRANULES", "GRASIM", "GUJGASLTD",
+    "HAL", "HAVELLS", "HCLTECH", "HDFCAMC", "HDFCBANK", "HDFCLIFE", "HEROMOTOCO",
+    "HFCL", "HINDALCO", "HINDCOPPER", "HINDPETRO", "HINDUNILVR", "HUDCO", "ICICIBANK",
+    "ICICIGI", "ICICIPRULI", "IDEA", "IDFCFIRSTB", "IEX", "IGL", "IIFL", "INDHOTEL",
+    "INDIACEM", "INDIAMART", "INDIANB", "INDIGO", "INDUSINDBK", "INDUSTOWER", "INFY",
+    "INOXWIND", "IOC", "IPCALAB", "IRB", "IRCTC", "IREDA", "IRFC", "ITC", "JINDALSTEL",
+    "JIOFIN", "JKCEMENT", "JSL", "JSWENERGY", "JSWSTEEL", "JUBLFOOD", "KALYANKJIL",
+    "KAYNES", "KEI", "KFINTECH", "KOTAKBANK", "KPITTECH", "LALPATHLAB", "LAURUSLABS",
+    "LICHSGFIN", "LICI", "LODHA", "LT", "LTF", "LTIM", "LTTS", "LUPIN", "M&M", "M&MFIN",
+    "MANAPPURAM", "MANKIND", "MARICO", "MARUTI", "MAXHEALTH", "MAZDOCK", "MCX",
+    "METROPOLIS", "MFSL", "MGL", "MOTHERSON", "MPHASIS", "MRF", "MUTHOOTFIN",
+    "NATIONALUM", "NAUKRI", "NAVINFLUOR", "NBCC", "NCC", "NESTLEIND", "NHPC", "NMDC",
+    "NTPC", "NYKAA", "OBEROIRLTY", "OFSS", "OIL", "ONGC", "PAGEIND", "PATANJALI",
+    "PAYTM", "PEL", "PERSISTENT", "PETRONET", "PFC", "PHOENIXLTD", "PIDILITIND", "PIIND",
+    "PNB", "PNBHOUSING", "POLICYBZR", "POLYCAB", "POONAWALLA", "POWERGRID", "PPLPHARMA",
+    "PRESTIGE", "PVRINOX", "RAMCOCEM", "RBLBANK", "RECLTD", "RELIANCE", "RVNL", "SAIL",
+    "SBICARD", "SBILIFE", "SBIN", "SHREECEM", "SHRIRAMFIN", "SIEMENS", "SJVN",
+    "SOLARINDS", "SONACOMS", "SRF", "SUNPHARMA", "SUNTV", "SUPREMEIND", "SYNGENE",
+    "TATACHEM", "TATACOMM", "TATACONSUM", "TATAELXSI", "TATAMOTORS", "TATAPOWER",
+    "TATASTEEL", "TATATECH", "TCS", "TECHM", "TIINDIA", "TITAGARH", "TITAN",
+    "TORNTPHARM", "TORNTPOWER", "TRENT", "TVSMOTOR", "ULTRACEMCO", "UNIONBANK",
+    "UNITDSPR", "UPL", "VBL", "VEDL", "VOLTAS", "WIPRO", "YESBANK", "ZEEL", "ZOMATO",
+    "ZYDUSLIFE"
+]
+
+# ==============================================================================
+# 2. TIME SLOTS DEFINITION (5 x 3m SLOTS + 12 x 30m SLOTS)
+# ==============================================================================
+SLOTS_3M = [
+    ("09:15-09:18", dtime(9, 15), dtime(9, 17)),
+    ("09:18-09:21", dtime(9, 18), dtime(9, 20)),
+    ("09:21-09:24", dtime(9, 21), dtime(9, 23)),
+    ("09:24-09:27", dtime(9, 24), dtime(9, 26)),
+    ("09:27-09:30", dtime(9, 27), dtime(9, 29)),
+]
+
+SLOTS_30M = [
+    ("09:30-10:00", dtime(9, 30), dtime(9, 59), dtime(10, 0)),
+    ("10:00-10:30", dtime(10, 0), dtime(10, 29), dtime(10, 30)),
+    ("10:30-11:00", dtime(10, 30), dtime(10, 59), dtime(11, 0)),
+    ("11:00-11:30", dtime(11, 0), dtime(11, 29), dtime(11, 30)),
+    ("11:30-12:00", dtime(11, 30), dtime(11, 59), dtime(12, 0)),
+    ("12:00-12:30", dtime(12, 0), dtime(12, 29), dtime(12, 30)),
+    ("12:30-13:00", dtime(12, 30), dtime(12, 59), dtime(13, 0)),
+    ("13:00-13:30", dtime(13, 0), dtime(13, 29), dtime(13, 30)),
+    ("13:30-14:00", dtime(13, 30), dtime(13, 59), dtime(14, 0)),
+    ("14:00-14:30", dtime(14, 0), dtime(14, 29), dtime(14, 30)),
+    ("14:30-15:00", dtime(14, 30), dtime(14, 59), dtime(15, 0)),
+    ("15:00-15:30", dtime(15, 0), dtime(15, 29), dtime(15, 30)),
+]
+
+# ==============================================================================
+# 3. DEFINEDGE LOGIN & SYMBOL LOADING
+# ==============================================================================
+def login_definedge():
+    conn = ConnectToIntegrate()
+    totp = pyotp.TOTP(TOTP_SECRET).now()
+    conn.login(api_token=API_TOKEN, api_secret=API_SECRET, totp=totp)
+    return conn, IntegrateData(conn)
+
+def parse_expiry_date(val):
+    if pd.isna(val):
+        return None
+    s = str(val).strip()
+    for fmt in ("%d%m%Y", "%Y-%m-%d", "%d-%b-%Y", "%d%b%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+def get_watchlist_symbols(conn=None):
+    today = datetime.now(IST).date()
+    stock_set = set(fno_stocks)
+    records = []
+
+    url = "https://app.definedgesecurities.com/public/allmaster.zip"
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+        csv_name = z.namelist()[0]
+        with z.open(csv_name) as f:
+            df = pd.read_csv(f, header=None, dtype=str, low_memory=False)
+
+    if SCAN_SEGMENT == "NSE":
+        eq = df[(df[0] == "NSE") & (df[4] == "EQ") & (df[2].str.strip().isin(stock_set))].copy()
+        for _, row in eq.iterrows():
+            records.append({
+                "underlying": str(row[2]).strip(),
+                "trading_symbol": str(row[3]).strip(),
+                "exchange": conn.EXCHANGE_TYPE_NSE
+            })
+        return sorted(records, key=lambda x: x["underlying"])
+    else:
+        nfo = df[(df[0] == "NFO") & (df[4] == "FUTSTK") & (df[2].str.strip().isin(stock_set))].copy()
+        for exp_col in [5, 8, 6, 7]:
+            if exp_col in nfo.columns:
+                parsed = pd.to_datetime(nfo[exp_col], format="%d%m%Y", errors="coerce")
+                if parsed.notna().sum() > 0:
+                    nfo["expiry"] = parsed.dt.date
+                    break
+        nfo = nfo[nfo["expiry"].notna() & (nfo["expiry"] >= today)]
+        for _, row in nfo.iterrows():
+            records.append({
+                "underlying": str(row[2]).strip(),
+                "trading_symbol": str(row[3]).strip(),
+                "expiry": row["expiry"],
+                "exchange": conn.EXCHANGE_TYPE_NFO
+            })
+        df_fut = pd.DataFrame(records)
+        df_fut = df_fut.sort_values("expiry").groupby("underlying", as_index=False).first()
+        return df_fut.sort_values("underlying").reset_index(drop=True).to_dict("records")
+
+def fetch_df(conn, ic, exchange, trading_symbol, timeframe, start_dt, end_dt):
+    hist = ic.historical_data(
+        exchange=exchange,
+        trading_symbol=trading_symbol,
+        timeframe=timeframe,
+        start=start_dt,
+        end=end_dt
+    )
+    df = pd.DataFrame(list(hist))
+    if df.empty:
+        return pd.DataFrame()
+
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    if df["datetime"].dt.tz is None:
+        df["datetime"] = df["datetime"].dt.tz_localize(IST)
+    else:
+        df["datetime"] = df["datetime"].dt.tz_convert(IST)
+
+    df = df.set_index("datetime").sort_index()
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+# ==============================================================================
+# 4. DAILY HARVESTER (-1 Close < -2 Close & Body < 0.67 * ATR100)
+#    + 100-DAY SLOT VOLUME BASELINE PRE-COMPUTATION
+# ==============================================================================
+def calculate_atr_sma(df, period=100):
+    high = df["high"]
+    low = df["low"]
+    prev_close = df["close"].shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    min_p = min(period, max(20, len(df) - 2))
+    return tr.rolling(window=period, min_periods=min_p).mean()
+
+def compute_100d_slot_averages(df_1m_hist, today_date):
+    df_prior = df_1m_hist[df_1m_hist.index.date < today_date].copy()
+    if df_prior.empty:
+        return None
+
+    all_dates = sorted(list(set(df_prior.index.date)))
+    last_100_dates = set(all_dates[-VOL_AVG_TRADING_DAYS:])
+    df_100 = df_prior[pd.Series(df_prior.index.date, index=df_prior.index).isin(last_100_dates)]
+
+    if df_100.empty:
+        return None
+
+    avg_3m = {}
+    for label, start_t, end_t in SLOTS_3M:
+        sub = df_100.between_time(start_t, end_t)
+        daily_vols = sub.groupby(sub.index.date)["volume"].sum()
+        avg_3m[label] = round(float(daily_vols.mean()), 2) if not daily_vols.empty else 0.0
+
+    avg_30m = {}
+    for label, start_t, end_t, _ in SLOTS_30M:
+        sub = df_100.between_time(start_t, end_t)
+        daily_vols = sub.groupby(sub.index.date)["volume"].sum()
+        avg_30m[label] = round(float(daily_vols.mean()), 2) if not daily_vols.empty else 0.0
+
+    return {"avg_3m": avg_3m, "avg_30m": avg_30m, "days_used": len(last_100_dates)}
+
+def build_daily_harvest_cache(conn, ic, valid_symbols, now_ist):
+    today_str = now_ist.strftime("%Y-%m-%d")
+    today_date = now_ist.date()
+    print(f"\n🌾 Building Daily Harvest List for {today_str} ({len(valid_symbols)} F&O stocks)...")
+
+    start_daily = (now_ist - timedelta(days=CALENDAR_LOOKBACK_DAYS_DAILY)).replace(hour=9, minute=15, second=0)
+    start_1m = (now_ist - timedelta(days=CALENDAR_LOOKBACK_DAYS_1M)).replace(hour=9, minute=15, second=0)
+
+    harvested_stocks = {}
+
+    for item in valid_symbols:
+        symbol = item["underlying"]
+        trd_sym = item["trading_symbol"]
+        exch = item["exchange"]
+        try:
+            df_bars = fetch_df(conn, ic, exch, trd_sym, conn.TIMEFRAME_TYPE_DAY, start_daily, now_ist)
+            if not df_bars.empty:
+                df_bars = df_bars[df_bars.index.date < today_date]
+
+            if len(df_bars) < 25:
+                continue
+
+            df_bars["atr"] = calculate_atr_sma(df_bars, ATR_PERIOD)
+            df_bars["body"] = (df_bars["close"] - df_bars["open"]).abs()
+
+            bar_m1 = df_bars.iloc[-1]  # -1 Daily bar
+            bar_m2 = df_bars.iloc[-2]  # -2 Daily bar
+
+            ref_atr = float(bar_m1["atr"])
+            body_m1 = float(bar_m1["body"])
+
+            if pd.isna(ref_atr) or ref_atr <= 0:
+                continue
+
+            # Condition 1: -1 close < -2 close
+            # Condition 2: |Open - Close| body < 0.67 * ATR(100)
+            if not (bar_m1["close"] < bar_m2["close"] and body_m1 < (BODY_ATR_MULT * ref_atr)):
+                continue
+
+            df_1m_full = fetch_df(conn, ic, exch, trd_sym, conn.TIMEFRAME_TYPE_MIN, start_1m, now_ist)
+            slot_avgs = compute_100d_slot_averages(df_1m_full, today_date)
+            if not slot_avgs:
+                continue
+
+            body_atr_ratio = round(ref_atr / body_m1, 2) if body_m1 > 0 else 999.0
+
+            harvested_stocks[symbol] = {
+                "stock": symbol,
+                "trading_symbol": trd_sym,
+                "m2_close": round(float(bar_m2["close"]), 2),
+                "m1_close": round(float(bar_m1["close"]), 2),
+                "m1_body": round(body_m1, 2),
+                "atr100": round(ref_atr, 2),
+                "body_atr_ratio": body_atr_ratio,
+                "avg_3m": slot_avgs["avg_3m"],
+                "avg_30m": slot_avgs["avg_30m"],
+                "days_used": slot_avgs["days_used"]
+            }
+            print(f"  ✅ Harvested {symbol}: -1 Close ({bar_m1['close']:.2f}) < -2 Close ({bar_m2['close']:.2f}) | Body: {body_m1:.2f} < 0.67*ATR ({0.67*ref_atr:.2f}) | {slot_avgs['days_used']}d Vol Avg")
+
+        except Exception as e:
+            print(f"⚠️ Error harvesting {symbol}: {e}")
+
+    cache_data = {
+        "trade_date": today_str,
+        "sent_slots": [],
+        "stocks": harvested_stocks
+    }
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache_data, f, indent=2)
+
+    print(f"🌾 Daily Harvest Complete: {len(harvested_stocks)} stock(s) shortlisted for today ({today_str}).")
+    return cache_data
+
+def load_or_build_today_cache(conn, ic, valid_symbols, now_ist):
+    today_str = now_ist.strftime("%Y-%m-%d")
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("trade_date") == today_str and data.get("stocks"):
+                return data
+        except Exception:
+            pass
+    return build_daily_harvest_cache(conn, ic, valid_symbols, now_ist)
+
+def save_today_cache(cache_data):
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache_data, f, indent=2)
+
+# ==============================================================================
+# 5. EMAIL ALERT SENDER (SORTED BY HIGHEST VOLUME RATIO AT TOP)
+# ==============================================================================
+def send_volume_email(slot_title, matches, total_harvested):
+    now_str = datetime.now(IST).strftime("%d-%b %H:%M:%S")
+    subject = f"📊 Volume Breakout [{slot_title}] ({len(matches)} Matches) - ({now_str})"
+
+    sorted_matches = sorted(matches, key=lambda x: x["vol_ratio"], reverse=True)
+
+    top5_str = ", ".join([m["stock"] for m in sorted_matches[:5]]) or "None"
+    all_str = ", ".join([m["stock"] for m in sorted_matches]) or "None"
+
+    body_lines = [
+        f"Intraday Volume Breakout Alert — Slot: {slot_title} (Checked at {now_str})",
+        f"Daily Harvest Filter: -1 Close < -2 Close & Body < 0.67 * ATR(100) (Harvested Today: {total_harvested} stocks)\n",
+        f"📋 TOP 5 BY VOLUME RATIO (Copy & Paste into Zone):\n{top5_str}\n",
+        f"All Matches ({len(sorted_matches)}): {all_str}\n"
+    ]
+
+    if slot_title == "09:15-09:30 (All Five 3m Slots > 100d Avg)":
+        headers = [
+            "Stock", "Avg Vol Ratio", "S1(9:15)", "S2(9:18)", "S3(9:21)",
+            "S4(9:24)", "S5(9:27)", "-1 Close", "ATR(100)", "Body"
+        ]
+        rows = [
+            [
+                m["stock"], f"{m['vol_ratio']}x",
+                f"{m['s1_ratio']}x", f"{m['s2_ratio']}x", f"{m['s3_ratio']}x",
+                f"{m['s4_ratio']}x", f"{m['s5_ratio']}x",
+                m["m1_close"], m["atr100"], m["m1_body"]
+            ]
+            for m in sorted_matches
+        ]
+    else:
+        headers = [
+            "Stock", "30m Slot", "Vol Ratio", "Slot Vol", "100d Avg Vol",
+            "-1 Close", "ATR(100)", "Body", "ATR/Body"
+        ]
+        rows = [
+            [
+                m["stock"], slot_title, f"{m['vol_ratio']}x",
+                f"{int(m['slot_vol']):,}", f"{int(m['avg_vol']):,}",
+                m["m1_close"], m["atr100"], m["m1_body"], m["body_atr_ratio"]
+            ]
+            for m in sorted_matches
+        ]
+
+    body_lines.append(tabulate(rows, headers=headers, tablefmt="grid"))
+
+    msg = MIMEMultipart()
+    msg["From"] = SENDER_EMAIL
+    msg["To"] = RECEIVER_EMAIL
+    msg["Subject"] = subject
+    msg.attach(MIMEText("\n".join(body_lines), "plain"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
+        server.login(SENDER_EMAIL, APP_PASSWORD)
+        server.send_message(msg)
+
+    print(f"✅ Volume Alert Email sent for [{slot_title}] ({len(sorted_matches)} matches)!")
+
+# ==============================================================================
+# 6. INTRADAY CHECKER: FIRST FIVE 3M SLOTS (09:30) + 30M SLOTS (10:00 - 15:30)
+# ==============================================================================
+def run_volume_scanner():
+    now_ist = datetime.now(IST)
+    conn, ic = login_definedge()
+
+    valid_symbols = get_watchlist_symbols(conn)
+    exch = conn.EXCHANGE_TYPE_NSE if SCAN_SEGMENT == "NSE" else conn.EXCHANGE_TYPE_NFO
+
+    cache_data = load_or_build_today_cache(conn, ic, valid_symbols, now_ist)
+    harvested = cache_data.get("stocks", {})
+    sent_slots = set(cache_data.get("sent_slots", []))
+
+    if not harvested:
+        print("📭 No stocks qualified in today's harvest list.")
+        return
+
+    if now_ist.time() < dtime(9, 30):
+        print(f"⏳ Harvest cache ready ({len(harvested)} stocks). Waiting for 09:30 AM IST to evaluate the five 3m slots...")
+        return
+
+    today_start = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+
+    today_1m_map = {}
+    for symbol, info in harvested.items():
+        try:
+            df_today = fetch_df(conn, ic, exch, info["trading_symbol"], conn.TIMEFRAME_TYPE_MIN, today_start, now_ist)
+            if not df_today.empty:
+                df_today = df_today[df_today.index.date == now_ist.date()]
+                today_1m_map[symbol] = df_today
+        except Exception as e:
+            print(f"⚠️ Error fetching today 1m for {symbol}: {e}")
+
+    # PHASE 1: At/After 09:30 AM -> Check First Five 3-Minute Slots (09:15-09:30)
+    slot_key_15m = "5x3M_09:15-09:30"
+    if now_ist.time() >= dtime(9, 30) and slot_key_15m not in sent_slots:
+        print("\n🔎 Evaluating First Five 3-Minute Volume Slots (09:15 to 09:30)...")
+        matches_3m = []
+
+        for symbol, info in harvested.items():
+            df_today = today_1m_map.get(symbol)
+            if df_today is None or df_today.empty:
+                continue
+
+            slot_ratios = []
+            all_five_passed = True
+
+            for label, start_t, end_t in SLOTS_3M:
+                sub = df_today.between_time(start_t, end_t)
+                today_vol = float(sub["volume"].sum()) if not sub.empty else 0.0
+                avg_vol = float(info["avg_3m"].get(label, 0.0))
+
+                if avg_vol <= 0 or today_vol <= avg_vol:
+                    all_five_passed = False
+                    break
+
+                slot_ratios.append(round(today_vol / avg_vol, 2))
+
+            if all_five_passed and len(slot_ratios) == 5:
+                avg_ratio = round(float(np.mean(slot_ratios)), 2)
+                matches_3m.append({
+                    **info,
+                    "s1_ratio": slot_ratios[0],
+                    "s2_ratio": slot_ratios[1],
+                    "s3_ratio": slot_ratios[2],
+                    "s4_ratio": slot_ratios[3],
+                    "s5_ratio": slot_ratios[4],
+                    "vol_ratio": avg_ratio
+                })
+                print(f"  🔥 5x3m PASS: {symbol} | Slot Ratios: {slot_ratios} | Avg Vol Ratio: {avg_ratio}x")
+
+        sent_slots.add(slot_key_15m)
+        cache_data["sent_slots"] = sorted(list(sent_slots))
+        save_today_cache(cache_data)
+
+        if matches_3m:
+            send_volume_email("09:15-09:30 (All Five 3m Slots > 100d Avg)", matches_3m, len(harvested))
+        else:
+            print("ℹ️ No harvested stocks beat their 100d average in all five 3-minute slots.")
+
+    # PHASE 2: After 09:30 AM -> Check Each Completed 30-Minute Slot (09:30-15:30)
+    for label, start_t, end_t, close_t in SLOTS_30M:
+        if now_ist.time() >= close_t and label not in sent_slots:
+            print(f"\n🔎 Evaluating 30-Minute Volume Slot [{label}]...")
+            matches_30m = []
+
+            for symbol, info in harvested.items():
+                df_today = today_1m_map.get(symbol)
+                if df_today is None or df_today.empty:
+                    continue
+
+                sub = df_today.between_time(start_t, end_t)
+                today_vol = float(sub["volume"].sum()) if not sub.empty else 0.0
+                avg_vol = float(info["avg_30m"].get(label, 0.0))
+
+                if avg_vol > 0 and today_vol > avg_vol:
+                    vol_ratio = round(today_vol / avg_vol, 2)
+                    matches_30m.append({
+                        **info,
+                        "slot_vol": today_vol,
+                        "avg_vol": avg_vol,
+                        "vol_ratio": vol_ratio
+                    })
+                    print(f"  🔥 30m PASS [{label}]: {symbol} | Vol: {int(today_vol):,} > 100d Avg: {int(avg_vol):,} ({vol_ratio}x)")
+
+            sent_slots.add(label)
+            cache_data["sent_slots"] = sorted(list(sent_slots))
+            save_today_cache(cache_data)
+
+            if matches_30m:
+                send_volume_email(label, matches_30m, len(harvested))
+            else:
+                print(f"ℹ️ No harvested stocks beat their 100d average volume on 30m slot [{label}].")
+
+# ==============================================================================
+# 7. STAY-AWAKE CLOCK FOR VOLUME SCANNER (PRE-MARKET HARVEST + 09:30 + 30M SLOTS)
+# ==============================================================================
+VOL_CHECKPOINTS_IST = [
+    dtime(9, 5, 0),    # Pre-market Daily Harvest + 100d Slot Baseline Pre-Calculation
+    dtime(9, 30, 10),  # First Five 3-Minute Slots (09:15-09:30) Evaluation & Email
+    dtime(10, 0, 10),  # 30m Slot 1 (09:30-10:00)
+    dtime(10, 30, 10), # 30m Slot 2 (10:00-10:30)
+    dtime(11, 0, 10),  # 30m Slot 3 (10:30-11:00)
+    dtime(11, 30, 10), # 30m Slot 4 (11:00-11:30)
+    dtime(12, 0, 10),  # 30m Slot 5 (11:30-12:00)
+    dtime(12, 30, 10), # 30m Slot 6 (12:00-12:30)
+    dtime(13, 0, 10),  # 30m Slot 7 (12:30-13:00)
+    dtime(13, 30, 10), # 30m Slot 8 (13:00-13:30)
+    dtime(14, 0, 10),  # 30m Slot 9 (13:30-14:00)
+    dtime(14, 30, 10), # 30m Slot 10 (14:00-14:30)
+    dtime(15, 0, 10),  # 30m Slot 11 (14:30-15:00)
+    dtime(15, 30, 10), # 30m Slot 12 (15:00-15:30)
+]
+
+def stay_awake_volume_clock():
+    session_mode = os.environ.get("SESSION_MODE", "MORNING")
+    now_ist = datetime.now(IST)
+
+    if now_ist.time() < dtime(5, 30) or now_ist.time() > dtime(15, 35):
+        if session_mode == "MORNING":
+            print("🚀 Outside market hours. Building/testing harvest cache once...")
+            run_volume_scanner()
+        return
+
+    if session_mode == "MORNING":
+        if now_ist.time() >= dtime(11, 35):
+            return
+        session_cutoff = dtime(11, 35)
+    else:
+        session_cutoff = dtime(15, 35)
+
+    try:
+        run_volume_scanner()
+    except Exception as e:
+        print(f"⚠️ Startup scan warning: {e}")
+
+    while True:
+        now_ist = datetime.now(IST)
+        if now_ist.weekday() >= 5 or now_ist.time() >= session_cutoff:
+            break
+
+        today_date = now_ist.date()
+        future_pts = [
+            IST.localize(datetime.combine(today_date, cp))
+            for cp in VOL_CHECKPOINTS_IST
+            if cp > now_ist.time() and cp <= session_cutoff
+        ]
+        if not future_pts:
+            break
+
+        next_dt = future_pts[0]
+        sleep_secs = (next_dt - now_ist).total_seconds()
+        print(f"💤 Sleeping {round(sleep_secs / 60, 1)} min until {next_dt.strftime('%H:%M:%S IST')}...")
+        time.sleep(max(1.0, sleep_secs))
+
+        try:
+            run_volume_scanner()
+        except Exception as e:
+            print(f"⚠️ Checkpoint scan error: {e}")
+
+if __name__ == "__main__":
+    stay_awake_volume_clock()
