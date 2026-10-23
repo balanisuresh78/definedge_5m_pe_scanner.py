@@ -18,15 +18,15 @@ from tabulate import tabulate
 from integrate import ConnectToIntegrate, IntegrateData
 
 # ==============================================================================
-# 1. CREDENTIALS & CONFIGURATION
+# 1. CREDENTIALS & CONFIGURATION (LOADED SECURELY FROM GITHUB SECRETS)
 # ==============================================================================
-API_TOKEN = os.environ.get("DEFINEDGE_API_TOKEN", "7eb93aac-c746-44bd-9755-18ae6289fdfc").strip()
-API_SECRET = os.environ.get("DEFINEDGE_API_SECRET", "snToBptj6e2X/c9c7POM8Q==").strip()
-TOTP_SECRET = os.environ.get("DEFINEDGE_TOTP_SECRET", "IJGDEV2EJFUTIQTNHBYG2SZXJ5IXOMBR").strip()
+API_TOKEN = os.environ.get("DEFINEDGE_API_TOKEN", "").strip()
+API_SECRET = os.environ.get("DEFINEDGE_API_SECRET", "").strip()
+TOTP_SECRET = os.environ.get("DEFINEDGE_TOTP_SECRET", "").strip()
 
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "balanisuresh@gmail.com").strip()
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL", "balanisuresh@gmail.com").strip()
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "YOUR_GMAIL_APP_PASSWORD").strip()
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
 
 IST = pytz.timezone("Asia/Kolkata")
 MEMORY_FILE = "129m_memory.json"
