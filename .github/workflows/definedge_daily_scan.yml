@@ -1,0 +1,109 @@
+name: Definedge Daily 3B Compression + 15m ST Sniper
+
+on:
+  schedule:
+    # Morning Wake-Up Crons (08:30 AM, 08:45 AM, 08:55 AM, 09:10 AM IST)
+    - cron: '0,15,25,40 3 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: definedge-daily-intraday-scanner
+  cancel-in-progress: false
+
+jobs:
+  morning-session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore daily_memory.json from daily-memory-state branch
+        run: |
+          git fetch origin daily-memory-state:daily-memory-state || true
+          git checkout daily-memory-state -- daily_memory.json 2>/dev/null || true
+
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
+
+      - name: Run Morning Session Clock (Until 11:27 AM IST)
+        env:
+          DEFINEDGE_API_TOKEN: ${{ secrets.DEFINEDGE_API_TOKEN }}
+          DEFINEDGE_API_SECRET: ${{ secrets.DEFINEDGE_API_SECRET }}
+          DEFINEDGE_TOTP_SECRET: ${{ secrets.DEFINEDGE_TOTP_SECRET }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          SESSION_MODE: "MORNING"
+        run: python definedge_daily_fut_scanner.py
+
+      - name: Save daily_memory.json to daily-memory-state branch
+        if: always()
+        run: |
+          if [ -f "daily_memory.json" ]; then
+            cp daily_memory.json /tmp/daily_memory.json
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git checkout -B daily-memory-state
+            cp /tmp/daily_memory.json daily_memory.json
+            git add daily_memory.json
+            git commit -m "Update daily_memory.json" || true
+            git push -f origin daily-memory-state
+          fi
+
+  afternoon-session:
+    needs: morning-session
+    if: success()
+    runs-on: ubuntu-latest
+    timeout-minutes: 265
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore daily_memory.json from daily-memory-state branch
+        run: |
+          git fetch origin daily-memory-state:daily-memory-state || true
+          git checkout daily-memory-state -- daily_memory.json 2>/dev/null || true
+
+      - name: Set Up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install pyintegrate pyotp pandas numpy tabulate pytz requests
+
+      - name: Run Afternoon Session Clock (11:27 AM to 03:43 PM IST)
+        env:
+          DEFINEDGE_API_TOKEN: ${{ secrets.DEFINEDGE_API_TOKEN }}
+          DEFINEDGE_API_SECRET: ${{ secrets.DEFINEDGE_API_SECRET }}
+          DEFINEDGE_TOTP_SECRET: ${{ secrets.DEFINEDGE_TOTP_SECRET }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          SESSION_MODE: "AFTERNOON"
+        run: python definedge_daily_fut_scanner.py
+
+      - name: Save daily_memory.json to daily-memory-state branch
+        if: always()
+        run: |
+          if [ -f "daily_memory.json" ]; then
+            cp daily_memory.json /tmp/daily_memory.json
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git checkout -B daily-memory-state
+            cp /tmp/daily_memory.json daily_memory.json
+            git add daily_memory.json
+            git commit -m "Update daily_memory.json" || true
+            git push -f origin daily-memory-state
+          fi
