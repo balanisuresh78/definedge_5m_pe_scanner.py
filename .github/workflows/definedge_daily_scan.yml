@@ -2,12 +2,12 @@ name: Definedge Daily 3B Compression + 15m ST Sniper
 
 on:
   schedule:
-    # Full Morning Wake-Up Net (05:45 AM to 10:10 AM IST) - 100% Free on Public Repo
-    - cron: '15,30,45 0 * * 1-5'
-    - cron: '0,15,30,45 1 * * 1-5'
-    - cron: '0,15,30,45 2 * * 1-5'
-    - cron: '0,10,20,30,40,50 3 * * 1-5'
-    - cron: '0,15,30,40 4 * * 1-5'
+    # Full Early-Morning Wake-Up Net (05:47 AM to 10:12 AM IST, staggered by 2m)
+    - cron: '17,32,47 0 * * 1-5'
+    - cron: '2,17,32,47 1 * * 1-5'
+    - cron: '2,17,32,47 2 * * 1-5'
+    - cron: '2,12,22,32,42,52 3 * * 1-5'
+    - cron: '2,17,32,42 4 * * 1-5'
   workflow_dispatch:
 
 permissions:
@@ -20,7 +20,7 @@ concurrency:
 jobs:
   morning-session:
     runs-on: ubuntu-latest
-    timeout-minutes: 200
+    timeout-minutes: 355
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
